@@ -167,7 +167,7 @@ python main.py          # 正式上岗，从此它住在群里
 | PC | `collector/gate.py` | 🚦 礼仪老师：限速、静默时段、随机延迟 |
 | PC | `collector/adb_client.py` | 数据线两端的操作封装 |
 | PC | `preflight.py` `dump-ui.py` `trigger.py` `reply-now.py` | 体检 / 校准样本 / 手动触发 / 应急代答 |
-| PC | `sim_scenarios.py` `sim_extreme.py` | 离线演习题（不联网也能验证逻辑） |
+| PC | `sim_all.py`（当前套件）`sim_scenarios.py` `sim_extreme.py` | 离线演习题（不联网也能验证逻辑） |
 | AstrBot | `adapter/data-plugins/astrbot_wechat_phone_bridge` | 🔌 翻译插座（WS 服务端 + 事件注册） |
 
 ## 附录 B：踩坑速查（都是真机换来的，给未来的你和你的 AI 助手）

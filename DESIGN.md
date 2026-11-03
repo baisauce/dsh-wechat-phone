@@ -1,3 +1,5 @@
+> ⚠️ **历史初稿（2026-10-31），勿按此安装或开发。** 本设计中"手机端 Kotlin 采集 App + Accessibility 输入"与"AstrBot Open API 直连"两条路线后来都被推翻，实际定稿是 **PC 侧 Python 采集器（ADB+OCR）+ AstrBot 平台适配器插件**。文中 WS 消息协议思想仍有效但细节有出入——一切以 README 正文与附录 A/B 为准。保留本文仅供了解设计演进。
+
 """WeChat Phone Bridge — design notes & runtime contract.
 
 Goal: 微信群全自动收发 for AstrBot, driven by a dedicated Android phone
