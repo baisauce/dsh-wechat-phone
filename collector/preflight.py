@@ -2,7 +2,8 @@
 """preflight.py — one-shot health check before the first on-device test.
 
 Run:  python preflight.py
-Every line prints PASS/WARN/FAIL with a fix hint. Nothing here mutates the phone.
+Every line prints PASS/WARN/FAIL with a fix hint. Only check #8 touches the
+screen (one tap at pixel 1,1); nothing here changes app data or messages.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ def main() -> int:
     if os.path.exists(adb_path):
         add(OK, "adb.exe 存在", adb_path)
     else:
-        add(FAIL, "adb.exe 缺失", "跑不了联调：检查 tools\\platform-tools")
+        add(FAIL, "adb.exe 缺失", "下载 Google platform-tools，把 adb.exe 的绝对路径填进 config.json 的 adb_path")
         return 1
     adb = Adb(adb_path, cfg.get("serial") or None)
 
@@ -90,7 +91,9 @@ def main() -> int:
             add(OK, "ADBKeyboard 已安装")
         else:
             add(WARN, "ADBKeyboard 未安装",
-                f"跑: adb install -r {os.path.join(HERE, '..', 'assets', 'ADBKeyboard.apk')} 然后在手机输入法里启用")
+                "从上游 https://github.com/senzhk/ADBKeyBoard 下载 APK，"
+                f"存到 {os.path.join(HERE, '..', 'assets', 'ADBKeyboard.apk')} 后 adb install -r，"
+                "再在手机「其他键盘」里启用")
     except AdbError:
         add(WARN, "ime list 读取失败")
 
@@ -108,18 +111,27 @@ def main() -> int:
         s.connect(("127.0.0.1", 6199))
         add(OK, "AstrBot 桥接 :6199 在听")
     except Exception:
-        add(FAIL, "桥接端口不通", "先跑 start-astrbot.bat")
+        add(FAIL, "桥接端口不通", "先启动 AstrBot，并在「平台」页启用并保存「微信群手机桥接」")
     finally:
         s.close()
+    # token 有两种放法：文件（优先）或内联；main.py 的取值顺序是 文件 → 内联
     tok_file = cfg.get("bridge_token_file", "")
-    add(OK if tok_file and os.path.exists(tok_file) else FAIL, "桥接 token 文件", tok_file)
+    inline = str(cfg.get("bridge_token", "") or "")
+    if tok_file and os.path.exists(tok_file):
+        add(OK, f"桥接 token 文件 {tok_file}", "内容须与 AstrBot 平台配置逐字一致")
+    elif inline:
+        add(OK, "桥接 token（config.json 内联）", f"{len(inline)} 字符，须与 AstrBot 平台配置逐字一致")
+    else:
+        add(FAIL, "桥接 token 缺失",
+            "在 config.json 填 bridge_token，或建 token 文件并把路径填进 bridge_token_file"
+            "（AstrBot 不会自动生成这个文件）")
 
     # 10. AstrBot webui
     try:
         urllib.request.urlopen("http://127.0.0.1:6185/", timeout=5)
         add(OK, "AstrBot WebUI 在线")
     except Exception:
-        add(FAIL, "AstrBot 未响应 6185", "start-astrbot.bat")
+        add(FAIL, "AstrBot 未响应 6185", "启动 AstrBot（README 第 3 步的启动方式）")
 
     bad = [r for r in results if r[0] == FAIL]
     warn = [r for r in results if r[0] == WARN]
