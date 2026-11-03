@@ -410,6 +410,7 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 | 群里 @ 了它不醒（插件侧） | 唤醒判定要消息里带 @ 组件 | 把 @机器人 构造成消息的**第一个组件**（配合 `enable_at`，本项目已实现） |
 | 回复又慢又"冷场感" | 表达教练把群客一律按冷客延迟 | cold 档 10/25→3/8、总封顶 90→32s（字段名见第 10 步） |
 | 一键启动脚本说 `python not resolved` / 秒退 | 自动解析器没找到解释器 | 设环境变量 `DSH_WX_PYTHON`（和 `DSH_WX_ADB`），或把 `config.json` 的 `python` / `adb_path` 填成绝对路径；脚本本身已不写死路径 |
+| 手敲 `python main.py` 报"已有采集器在跑" | 采集器自带单实例锁（守护只管守护自己的互斥体，两个采集器会抢同一块屏幕：重复回复、还可能把半截引文草稿留在输入框里） | 别双开：要么直接看 `logs\collector.log`，要么按 **watchdog → cmd 包装 → python** 停掉守护再前台调试。`--selftest` 不受此锁限制，可与守护并行 |
 | `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
 | 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
 
