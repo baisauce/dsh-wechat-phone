@@ -1,5 +1,7 @@
 # dsh-wechat-phone · 让 AI 住进一台手机里的微信
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > ⚠️ **先读这条。** 微信是全国用户最多的聊天软件之一，屏幕对面很可能还有**不熟悉、也分不清"AI 机器人"的中老年长辈**。本项目是开源学习用品，只供大家学习交流：**严禁用来冒充任何真人身份，或实施欺骗、骚扰、营销群发等违法违纪行为。** 请让它以"明牌的机器人"身份说话——小号登场、人设公开、白名单内活动，并让群里的家人知道它是个 AI。这既是风控底线，也是对长辈最基本的尊重。
 
 一句话说明白这个项目：**你有一个很聪明的大脑（大模型），但它没有手、没有嘴，碰不到微信**。微信官方也没给个人账号开"进群里聊天"的门。所以这个项目给它造了一具"手机身体"——一台挂着小号的安卓真机——让 AI 接管它的眼睛和手：看群友说话，用家人的口吻打字回复。
@@ -253,5 +255,5 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 - 🦴 身体：[AstrBot](https://github.com/AstrBotDevs/AstrBot)——平台接线、值班管线、模型水电、面具插槽、档案柜、插件市场全是现成的，本项目只接了"手机的眼睛和手"这一段。
 - 👀 设计参考：[teangtang1122/dsh-phone-control](https://github.com/teangtang1122-dsh-phone-control)（观察-行动分离等思想从这里继承；路线对照见附录 D）。
 - 👯 同生态的邻居：[Yuuyuko-uu/dsh-wechat-bridge](https://github.com/Yuuyuko-uu/dsh-wechat-bridge)（MIT）及其修改版们——PC 微信读本地库 + UIA 发送的另一条路线，对照见附录 D。
-- 许可：拟定 MIT，正式 `LICENSE` 后补。
+- 许可：[MIT](LICENSE)，全文见根目录 `LICENSE` 文件。按 MIT 的 "AS IS" 条款，本项目不承担任何使用后果——请遵守仓库顶部的使用红线。
 - 永不提交：`config.json`（真实群名）、`logs/`、`calibration/`（真实聊天内容与截图）、门禁卡 token、第三方 APK——`.gitignore` 已固化，提 PR 前请自查 diff。
