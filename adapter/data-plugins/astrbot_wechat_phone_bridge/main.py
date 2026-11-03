@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 
@@ -63,6 +64,37 @@ class WechatPhoneBridgePlugin(Star):
         super().__init__(context)
 
 
+_TITLE_COUNT = re.compile(r"[（(]\d+[)）]\s*$")
+
+
+def norm_title(name) -> str:
+    """Session title the way the collector reports it: spaces stripped, trailing member
+    count "(12)" removed. WeChat rewrites that count whenever someone joins/leaves, so an
+    exact string match against allowed_chats would silently kill the whole whitelist."""
+    return _TITLE_COUNT.sub("", str(name or "").replace(" ", ""))
+
+
+def parse_listish(value) -> list:
+    """Accept either a JSON list or a hand-typed 'A,B、C' string.
+
+    Iterating a bare string yields single characters, which would turn a whitelist of
+    one group into a set of letters and quietly drop every message.
+    """
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [p.strip() for p in value.replace("，", ",").replace("、", ",").split(",") if p.strip()]
+    if isinstance(value, (list, tuple, set)):
+        out = []
+        for item in value:
+            if isinstance(item, str):
+                out.extend(parse_listish(item))
+            elif item is not None:
+                out.append(str(item).strip())
+        return [x for x in out if x]
+    return [str(value).strip()]
+
+
 @register_platform_adapter(
     "wechat_phone_bridge",
     "微信群手机桥接：局域网 WebSocket 对接安卓采集端（无障碍/通知，无注入无协议）",
@@ -85,12 +117,9 @@ class WechatPhoneBridgePlatform(Platform):
         self.port = int(pc.get("ws_port") or 6199)
         self.token = str(pc.get("token") or "")
         self.auto_accept = bool(pc.get("auto_accept", True))
-        self.allowed = {str(x) for x in (pc.get("allowed_chats") or [])}
+        self.allowed = {norm_title(x) for x in parse_listish(pc.get("allowed_chats"))}
         raw_kw = pc.get("wake_keywords") or "哦小鲸,deepseek,鲸鲸,小鲸,大鲸"
-        if isinstance(raw_kw, list):
-            parts = [str(k) for k in raw_kw]
-        else:
-            parts = str(raw_kw).replace("，", ",").replace("、", ",").split(",")
+        parts = parse_listish(raw_kw)
         self.wake_keywords = [k.strip().lower() for k in parts if k.strip()]
         self._clients: set = set()
         self._outbox: list = []  # (ts, payload) while no collector is attached
@@ -229,7 +258,7 @@ class WechatPhoneBridgePlatform(Platform):
             chat_name = group or sender
             if not text:
                 return
-            if not self.auto_accept and chat_name not in self.allowed:
+            if not self.auto_accept and norm_title(chat_name) not in self.allowed:
                 return
             abm = AstrBotMessage()
             abm.self_id = self.meta().id
