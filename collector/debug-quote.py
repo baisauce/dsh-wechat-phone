@@ -4,14 +4,20 @@ gap-based quote reply flow."""
 import asyncio
 import json
 import os
+import sys
 import time
 
 import websockets
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8-sig"))
-tok = open(cfg["bridge_token_file"]).read().strip()
+sys.path.insert(0, HERE)
+import bridge_cfg  # noqa: E402
+
+cfg = bridge_cfg.load_config()
+tok = bridge_cfg.resolve_token(cfg)
+if not tok:
+    raise SystemExit("no bridge token: set bridge_token (or bridge_token_file) in collector/config.json")
 
 async def main():
     async with websockets.connect(f"{cfg['bridge_ws']}?token={tok}", max_size=2_000_000) as ws:

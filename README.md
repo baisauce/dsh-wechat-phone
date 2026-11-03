@@ -86,10 +86,11 @@ AstrBot 里那颗大脑每说一句话都要调用一个模型 API。两种买�
 
 > 按这个仓库 README 的「第 3 步」帮我安装 AstrBot：Windows 系统，Python ≥ 3.10，WebUI（控制室）端口 6185。参考资料：官方文档 https://docs.astrbot.app/deploy/ 和 README 里给包工头的坑提示。装好告诉我登录用户名和初始密码。
 
-给它的落地提示（**任选一种官方路线，别自己发明第三种**）：
+给它的落地提示（下面三条：前两条是官方路线，第三条是作者机的便携目录做法，都是正路；选一条即可，**别去发明其它野路子**）：
 
 - **官方 Windows 安装脚本**：`irm https://docs.astrbot.app/install.ps1 | iex`（脚本会装 uv + Python 3.12 + AstrBot）；注意**脚本装出来的实例不支持在 WebUI 里升级**，以后更新走 `uv tool upgrade astrbot --python 3.12`。
 - **uv 方式**：`uv tool install astrbot --python 3.12`，然后在你想放数据的工作目录里执行 `astrbot init`，用 `astrbot run --port 6185` 启动。
+- **第三种（作者机在用）**：一个自带 `python\python.exe` 的便携目录（嵌入式 Python），改 `python*._pth` 启用 `import site` 后 `pip install astrbot`。好处是完全不碰系统环境；坏处是升级要手动 `pip install -U astrbot`，且第 9 步的 `<py>` 就是它。
 
 验收清单（三条都要有明确答复才算这步成了）：
 
@@ -138,7 +139,7 @@ AstrBot 里那颗大脑每说一句话都要调用一个模型 API。两种买�
 1. **`astrbot_plugin_livingmemory`**（📔 日记本，显示名 LivingMemory）：聊天内容自动归档进向量库，下次谁再说话，先去档案柜翻相关旧事再开口。
 2. **`astrbot_plugin_wanna_be_human`**（💅 表达教练，「好想成为人类啊」）：模型初稿往往像播音腔，它负责改写成人话——"收到，请问有什么可以帮您"变成"在呀，怎么这个点才想起我？"。
 
-> 命令行等价操作（**GitHub 直连不畅时加 `--proxy`**）：
+> 命令行等价操作（**先 cd 到 AstrBot 工作目录**——`astrbot plug` 拿**当前目录**当 AstrBot 根目录，跑错地方会报 `... is not a valid AstrBot root directory. Use 'astrbot init' to initialize`；也可以先 `$env:ASTRBOT_ROOT = "<AstrBot目录>"`。**GitHub 直连不畅时加 `--proxy`**）：
 >
 > ```powershell
 > astrbot plug search livingmemory
@@ -165,9 +166,10 @@ git clone https://github.com/baisauce/dsh-wechat-phone
 # 上一步失败（GitHub 直连不通）就改用镜像前缀，或让 DSH 下 zip 解压：
 #   git clone https://gh-proxy.example.com/https://github.com/baisauce/dsh-wechat-phone
 # 把适配器拷进 AstrBot 的插件目录（目录名不要改）
+# <AstrBot工作目录> = 第 3 步跑 astrbot init 的那个目录（里面有 data\plugins 和 .astrbot 文件）
 Copy-Item -Recurse dsh-wechat-phone\adapter\data-plugins\astrbot_wechat_phone_bridge `
   <AstrBot工作目录>\data\plugins\
-# 控制室 → 平台 页新建平台，类型选「微信群手机桥接」，填这五样：
+# 控制室 → 平台 页新建平台，类型选「微信群手机桥接」，填这六样：
 #   ws_host=127.0.0.1          ← 默认是 0.0.0.0（整个局域网都能连），采集器就在本机，收到 127.0.0.1 更稳
 #   ws_port=6199
 #   token=<你自己编的一串长随机字符>      ← 第 9 步要用同一串，见下方"门禁卡闭环"
@@ -184,7 +186,9 @@ Copy-Item -Recurse dsh-wechat-phone\adapter\data-plugins\astrbot_wechat_phone_br
 > 1. AstrBot 侧：平台配置里的 `token` 字段（控制室手填）；
 > 2. 采集器侧：`collector\config.json` 里的 `bridge_token`（直接填字符串）**或** `bridge_token_file`（填一个文件路径，文件内容就是那串 token）。
 >
-> AstrBot **不会**自动把 token 写成文件——所以走"文件"路线时你得自己创建那个文件（第 9 步有命令）。嫌麻烦就**只用 `bridge_token` 内联字段**，把 `bridge_token_file` 留空。两边不一致时，采集器连得上端口但被插座拒在门外（preflight 会红）。
+> AstrBot **不会**自动把 token 写成文件——所以走"文件"路线时你得自己创建那个文件（第 9 步有命令）。嫌麻烦就**只用 `bridge_token` 内联字段**，把 `bridge_token_file` 留空。
+>
+> ✅ **两边对不对得上，`preflight.py` 会替你查**：它会**只读**打开 AstrBot 的 `data\cmd_config.json`，找到 `type=wechat_phone_bridge` 那个平台条目（注意它的键是**扁平**的，`token`/`ws_port`/`auto_accept` 直接挂在条目上），然后核对四件事：① token 是否逐字一致（不一致直接红灯——留空更危险：适配器只在 token 非空时校验，留空＝门禁失效）；② `ws_host` 是不是还写 `0.0.0.0`（暴露到局域网）；③ `auto_accept` 是否还开着（开着＝名单形同虚设）；④ 采集器的 `wake_keywords` 有没有全部覆盖进 AstrBot 那份。AstrBot 不装在默认位置时，在 `config.json` 里把 `astrbot_config` 指到那个 `cmd_config.json` 即可。**全程不连 6199、不碰 AstrBot 进程**，所以不会把排队的回复骗走。
 
 ## 第 8 步：给身体做"开机体检"（手机准备）
 
@@ -199,8 +203,10 @@ Copy-Item -Recurse dsh-wechat-phone\adapter\data-plugins\astrbot_wechat_phone_br
    & "<工具目录>\platform-tools\adb.exe" devices
    ```
    出现设备号 + `device` = 成功；`unauthorized` 就重插线并在手机弹窗点"允许"。多台设备时，把第 9 步配置里的 `serial` 填成这台设备的序列号。
-5. **装 AI 专用键盘 ADBKeyboard**（本仓库**不打包**第三方 APK，需从上游自取）：仓库 https://github.com/senzhk/ADBKeyBoard ，下载其 `ADBKeyBoard.apk`，建议存进本仓库的 `assets\` 目录（该目录被 `.gitignore` 忽略，不会被提交）再安装：
+5. **装 AI 专用键盘 ADBKeyboard**（本仓库**不打包**第三方 APK，需从上游自取）：仓库 https://github.com/senzhk/ADBKeyBoard ，下载其 `ADBKeyBoard.apk`。注意 clone 下来**没有** `assets\` 目录（被 `.gitignore` 忽略），先建再放、再安装：
    ```powershell
+   New-Item -ItemType Directory -Force dsh-wechat-phone\assets | Out-Null
+   # 把下载的 ADBKeyBoard.apk 放进 assets\（文件名随意，下文以 ADBKeyboard.apk 为例）
    & "<工具目录>\platform-tools\adb.exe" install -r "dsh-wechat-phone\assets\ADBKeyboard.apk"
    ```
    然后在手机上**手动启用**：设置 → 系统和输入法 → 其他键盘/管理键盘 → 打开 ADBKeyboard，并同意那个"可能收集所有输入"的警告。**首次启用无法自动化**；之后采集器启动时会自己把输入法切过去。
@@ -210,25 +216,27 @@ Copy-Item -Recurse dsh-wechat-phone\adapter\data-plugins\astrbot_wechat_phone_br
 
 ## 第 9 步：出厂——跑起来
 
-**先搞清一件事：用哪个 Python。** 采集器和 AstrBot 插件要**共用同一个 Python 环境**（两边都 import `websockets`）。所以：
+**先搞清一件事：用哪个 Python。** 采集器是一个**独立进程**，它自己只需要 `websockets` / `rapidocr-onnxruntime` / `pillow` / `numpy` 这几个包；AstrBot 插件跑在 AstrBot 自己的进程里，用的 websockets 由 AstrBot 自带。所以**不必**和 AstrBot 共用同一个环境——共用只是省一次装依赖，分开反而更干净。三选一：
 
-- AstrBot 是 uv/官方脚本装的 → 用那个环境里的 Python（用 `where.exe astrbot` 找到它再定位解释器）；
-- AstrBot 是嵌入式 Python 装的 → 就用它，形如 `<AstrBot目录>\python\python.exe`（记得第 3 步那条 `._pth` 提示）；
-- 想要最省事：另装一个系统 Python 3.10–3.12 专门跑采集器也完全可行（它不需要 AstrBot 的库）。
+- **复用 AstrBot 的环境**：uv 工具装的解释器通常在 `%LOCALAPPDATA%\uv\tools\astrbot\Scripts\python.exe`——注意 `where.exe astrbot` 给出的是启动器 `astrbot.exe`，**不是**解释器，别直接当 `<py>`；嵌入式装的则是 `<AstrBot目录>\python\python.exe`（记得第 3 步那条 `._pth` 提示）。只是 uv 装的环境归 uv 管，往里塞第三方包不是好习惯（升级时可能被重建）。
+- **最省事、最干净**：另建一个独立 venv（或装个系统 Python 3.10–3.12）专跑采集器，把 `requirements.txt` 装进它就行。
+- 采集器不需要任何 AstrBot 的库，所以上面两种都成立。
+
+> 省心一点：仓库自带的 `start-collector*.bat` / `collector-watchdog.ps1` 会调 `tools/resolve-env.ps1` 自动找解释器（`DSH_WX_PYTHON` → `config.json` 的 `python` → AstrBot 旁边的 `python\python.exe` → PATH）。你只要把 `config.json` 里的 `python` 填成你选定的那个 `<py>`，以后双击 bat 就不用再管路径。
 
 下面命令里的 `<py>` 就是那个解释器；Windows 上**裸敲 `python` 很可能撞上微软商店的假 stub**，别用裸 `python`。
 
 ```powershell
 cd dsh-wechat-phone\collector
 
-# ① 先做零硬件离线自检（不插手机、不联网也能跑，24 项逻辑题，约 1 分钟）
-#    必须指向"示例配置"跑，否则会用你机器上的真群名做断言
-$env:SIM_CONFIG = (Resolve-Path .\config.example.json).Path
-<py> sim_all.py            # 全绿(exit 0) 才继续
-
-# ② 装依赖
+# ① 装依赖（必须最先装：下面的离线自检本身要 import numpy/PIL/websockets）
 <py> -m pip install -r requirements.txt
 #    PyPI 直连慢/失败就换镜像：<py> -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# ② 零硬件离线自检（不插手机、不联网也能跑，24 项逻辑题，约 1 分钟）
+#    必须指向"示例配置"跑，否则会用你机器上的真群名做断言
+$env:SIM_CONFIG = (Resolve-Path .\config.example.json).Path
+<py> sim_all.py            # 全绿(exit 0) 才继续；红了先按报错补齐缺的包，别急着连手机
 
 # ③ 配置：抄一份示例配置来改
 Copy-Item config.example.json config.json
@@ -236,11 +244,12 @@ notepad config.json        # 必改：adb_path、home_chat、bot_nicknames、wak
 
 # ④ token 闭环：二选一
 #    A. 内联（推荐）：把你在 AstrBot 里填的那串写进 config.json 的 "bridge_token"
-#    B. 走文件：手动创建文件，内容就是那一串
+#    B. 走文件：手动建文件，内容就是那一串；再把 config.json 的 "bridge_token_file" 指向它
 Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot 平台配置里填的那串 token>" -Encoding ascii -NoNewline
+#    → 然后在 config.json 里写："bridge_token_file": "<AstrBot目录>\\logs\\.bridge_token"
 
-# ⑤ 体检：AstrBot 必须已经启动（第 9 项要连 6199、第 10 项要连 6185）
-<py> preflight.py          # 十项体检，红灯会直接告诉你哪个插座没电
+# ⑤ 体检：A 段（配置+门禁卡比对+端口+WebUI）不插手机也能跑；B 段才需要设备
+<py> preflight.py          # 逐项体检：手机/桥端口/token 一致性/AstrBot 平台配置，红灯直接告诉你哪个插座没电
 
 # ⑥ 上岗（前台跑，便于第一次看日志；Ctrl+C 停）
 <py> main.py
@@ -251,12 +260,14 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `adb_path` | ✅ | 第 8 步那个 adb.exe 的绝对路径 |
+| `python` | 建议填 | 跑采集器的解释器绝对路径；`tools/resolve-env.ps1` 优先用它（环境变量 `DSH_WX_PYTHON` 优先级更高） |
 | `home_chat` | ✅ | 常驻的那一个微信会话标题（群名或联系人名）；采集器**只读它、只写它** |
 | `bot_nicknames` | ✅ | 它在会话里可能被 @ 到的所有写法（含你给对方设的备注名） |
 | `wake_keywords` | ✅ | 触发转发的关键词（采集器侧一份；AstrBot 侧还有一份，两处要一致） |
 | `bridge_token` 或 `bridge_token_file` | ✅ 二选一 | 与 AstrBot 平台配置的 `token` 逐字一致 |
 | `serial` | 多设备时必填 | `adb devices` 第一列 |
 | `bridge_ws` | 默认即可 | `ws://127.0.0.1:6199` |
+| `astrbot_config` | 选填 | AstrBot `data\cmd_config.json` 的路径；留空则按"仓库上一级\data\"猜。只给 preflight 做**只读**核对用 |
 | `gate.*` | 默认即可 | 限速/静默/延迟；`quiet_hours` 两个数字**相等＝关闭夜间静默** |
 | `input_method` | 默认即可 | `adbkeyboard`；全英文测试可用 `ascii` |
 
@@ -270,13 +281,17 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 4. 群里闲聊且不含唤醒词 → 沉默（**知道什么时候不该插嘴**）；
 5. 项目根目录新建 `PAUSE` 空文件（`dsh-wechat-phone\PAUSE`，**不是** collector 目录下）再发唤醒词 → 零输出；删掉它立刻恢复，**不用重启**（**急停钮好使**）。
 
-五个全过，收工。想先不碰手机验一遍大脑和插座，用 `python main.py --selftest`（不接 adb，直接对桥发一帧并等回复）。
+五个全过，收工。想先不碰手机验一遍大脑和插座，用 `<py> main.py --selftest`（不接 adb，直接对桥发一帧并等回复；前置：`config.json` 已建好、AstrBot 在跑、token 对得上）。
 
-**要它 7×24 常驻**：`python main.py` 关窗即死。仓库里带了守护脚本 `collector-watchdog.ps1` + `start-collector-bg.bat`（崩溃 15 秒后自动重启、命名互斥防双开），但**它们里面写的是作者机的绝对路径**——换机器请把开头几行的 `python.exe` / `main.py` / `adb.exe` / 日志路径改成你自己的，或让 DSH 按你机器重新生成一份。手机侧还要：充电时不休屏（开发者选项）、屏幕不锁。
+**要它 7×24 常驻**：`<py> main.py` 关窗即死。仓库里带了守护脚本 `collector-watchdog.ps1` + `start-collector-bg.bat`（命名互斥防双开；正常崩溃 15 秒后重启，若连续 3 次"秒退"（典型场景：手机没插线）自动退避成 60 秒一轮，免得刷屏）。它们**不写死任何机器路径**：启动时先跑 `tools/resolve-env.ps1`，按「环境变量 `DSH_WX_PYTHON` / `DSH_WX_ADB` → `collector\config.json` 的 `python` / `adb_path` → AstrBot 旁边的嵌入式 `python\python.exe` → PATH」的顺序找解释器和 adb；找不到会报 `python not resolved` 并退出（`run-once.cmd` 退出码 3、watchdog 4）。手机侧还要：充电时不休屏（开发者选项）、屏幕不锁。
 
 ## 第 10 步（可选）：flight simulator——不碰手机的排练场
 
-想改人格/换模型/调延迟，不必每条都上真群试。`python replay_mentions.py` 会造几个**假群**往插座里灌假消息，收集回复存成 JSON——采集器有个规矩：只把回复打进它的 `home_chat` 那个会话，所以假群的回复永远不会误发到真实群。**先排练，再上台。**（前置：AstrBot 在跑、`config.json` 存在且 token 对得上。）
+想改人格/换模型/调延迟，不必每条都上真群试。`<py> replay_mentions.py` 会造几个**假群**往插座里灌假消息，收集回复存成 JSON——采集器有个规矩：只把回复打进它的 `home_chat` 那个会话，所以假群的回复永远不会误发到真实群。**先排练，再上台。**
+
+> ⚠️ **排练前必须先放行假群，否则一条回复都收不到。** 回放用的群名是 `示例家庭群（回放B）`（可用环境变量 `REPLAY_GROUP` 改），而第 7 步如果设了 `auto_accept=false`，适配器只认真在 `allowed_chats` 里的会话——假群不在名单里，消息会被**静默丢弃**。两个办法任选：① 把 `示例家庭群（回放B）` 加进 `allowed_chats`；② 排练期间临时把 `auto_accept` 设成 `true`，排完记得改回来。
+>
+> 前置：AstrBot 在跑、`config.json` 存在、token 对得上（内联 `bridge_token` 或 `bridge_token_file` 二选一都行）。
 
 调延迟实测经验：回复的主要耗时在表达教练的"打字节奏"模拟，且群聊消息一律按"好久不见的冷客"计算，会白等 10–25 秒。在 **wanna_be_human 插件设置**里改这四个值即可：`time.rhythm_delay_cold_min` / `time.rhythm_delay_cold_max`（把 10/25 降到 3/8）、`typing.delay_max` 与 `typing.total_delay_cap`（总封顶从 90 降到 32 秒）。实测群回复从均值 31s 降到 15–28s。
 
@@ -287,14 +302,17 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 | 位置 | 文件 | 职责（对照正文比喻） |
 |---|---|---|
 | PC | `collector/main.py` | 眼睛和手的主循环：认屏→去重→通报→打字 |
-| PC | `collector/ocr_channel.py` `collector/wechat_ui.py` | "看"的通道 + 微信界面识字规则 |
+| PC | `collector/ocr_channel.py` | "看"的通道——**现行唯一读屏入口**（OCR 认字） |
+| PC | `collector/wechat_ui.py`（旧 uiautomator 解析，**已不参与运行**） | 微信 8.0.7+ 后 uiautomator 失效，仅留作历史参考 |
 | PC | `collector/gate.py` | 🚦 礼仪老师：限速、静默时段、随机延迟 |
 | PC | `collector/adb_client.py` | 数据线两端的操作封装 |
 | PC | `collector/requirements.txt` | 依赖清单（第 9 步用） |
-| PC | `collector/preflight.py` `collector/dump-ui.py` | 体检 / 校准样本 |
+| PC | `collector/preflight.py` `collector/dump-ui.py` | 体检（含与 AstrBot 平台配置的只读比对）/ 存样本（dump-ui 会存 XML+截图，截图可作 OCR 校准样本；XML 那路随 uiautomator 一起废了） |
+| PC | `collector/bridge_cfg.py` | 读 `config.json` 与门禁卡的**唯一入口**（env → 文件 → 内联），附带只读解析 AstrBot 平台配置；所有一次性工具都走它 |
 | PC | `collector/trigger.py` `collector/reply-now.py` `collector/rescue-send.py` | 手动触发 / 应急代答 / 补发救援 |
 | PC | `collector/sim_all.py`（当前套件）`collector/sim_scenarios.py` `collector/sim_extreme.py` | 离线演习题（不联网不接手机也能验证逻辑） |
-| PC | `start-collector.bat` `start-collector-bg.bat` `collector-watchdog.ps1` | 常驻与守护（**含作者机绝对路径，换机需改**） |
+| PC | `start-collector.bat` `start-collector-bg.bat` `collector-watchdog.ps1` | 常驻与守护（**路径无关**，机器相关路径统一由 `tools/resolve-env.ps1` 解析） |
+| PC | `tools/resolve-env.ps1` | 唯一的"找 python / 找 adb"入口：环境变量 → `config.json` → 常见布局 → PATH |
 | PC | `logs/collector.log` `collector/state.json` | 运行日志 / 游标与去重表（含真实聊天，**永不提交**） |
 | AstrBot | `adapter/data-plugins/astrbot_wechat_phone_bridge` | 🔌 翻译插座（WS 服务端 + 事件注册） |
 
@@ -302,9 +320,12 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 
 | 现象 | 为什么 | 怎么办 |
 |---|---|---|
-| 用系统工具读微信界面返回空白 | **微信 8.0.7+ 关了"提词器"**（反 uiautomator） | 采集器用 OCR"亲眼看屏幕"（RapidOCR 本地跑，认字置信度 0.96+）——**这也是当前唯一读屏方式，通知/列表通道已废弃** |
+| 用系统工具读微信界面返回空白 | **微信 8.0.7+ 关了"提词器"**（反 uiautomator） | 采集器用 OCR"亲眼看屏幕"（RapidOCR 本地跑，置信度低于 0.6 的行丢弃）——**这也是当前唯一读屏方式，通知/列表通道已废弃** |
 | 配置里填了 `watch_chats` 却照样不理人／照样理人 | 那是旧架构字段，**代码不读** | 白名单设在 AstrBot 平台配置：`auto_accept=false` + `allowed_chats`；采集器侧靠 `home_chat` 只守一间 |
-| preflight 第 9 项"桥接 token 文件"红灯 | AstrBot 不会自动写 token 文件 | 按第 7 步"门禁卡闭环"：用 `bridge_token` 内联，或自己 `Set-Content` 创建那个文件 |
+| preflight"桥接 token"红灯 | AstrBot 不会自动写 token 文件 | 按第 7 步"门禁卡闭环"：用 `bridge_token` 内联，或自己 `Set-Content` 创建那个文件 |
+| preflight 报"token 两侧不一致"／"AstrBot 侧 token 为空" | 一边填了没同步，或 AstrBot 侧留空 | 两边填同一串。注意**留空比填错更危险**：适配器只在 token 非空时校验，留空＝本机任何进程都能当采集器接进来 |
+| 6185 能开、名单却拦不住人 | AstrBot 侧 `ws_host` 还是默认 `0.0.0.0`，6199 暴露给整个局域网 | 平台配置改 `ws_host=127.0.0.1`（采集器就在本机）；preflight 会 WARN 提醒 |
+| 名单写了但谁都能触发它 | AstrBot 侧 `auto_accept=true`＝来者不拒，`allowed_chats` 直接被跳过 | 设 `auto_accept=false` 再把 `home_chat` 写进 `allowed_chats`；preflight 两项都会 WARN |
 | 采集器连上 6199 但 AstrBot 说 `unauthorized`／无 `[wxb] collector connected` | 两边 token 不一致 | 逐字核对；注意别混入空格/换行（`Set-Content` 加 `-NoNewline`） |
 | 打字能进框，但按回车不发送 | 微信输入框不认默认回车 | 三级敲门：编辑器动作→回车键→OCR 找到发送按钮直接点；每次敲完看一眼输入框空没空 |
 | AI 回复自己，无限套娃 | 分不清气泡是我发的还是别人发的 | 靠位置：贴右缘=自己发的；再记一份"我说过的话"防漏 |
@@ -319,7 +340,7 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 | AstrBot 收了消息但回复凭空消失 | **框架基类的 `send()` 只记录不投递**（新手杀手） | 自定义平台必须自己实现事件类，覆写 `send()` 调 `platform.send_by_session`（本项目已实现） |
 | 群里 @ 了它不醒（插件侧） | 唤醒判定要消息里带 @ 组件 | 把 @机器人 构造成消息的**第一个组件**（配合 `enable_at`，本项目已实现） |
 | 回复又慢又"冷场感" | 表达教练把群客一律按冷客延迟 | cold 档 10/25→3/8、总封顶 90→32s（字段名见第 10 步） |
-| 一键启动脚本没反应/报路径不存在 | `start-collector*.bat`、`collector-watchdog.ps1` 写的是**作者机绝对路径** | 改成你的路径，或让 DSH 重新生成；脚本里的 Python 必须与 AstrBot 同环境 |
+| 一键启动脚本说 `python not resolved` / 秒退 | 自动解析器没找到解释器 | 设环境变量 `DSH_WX_PYTHON`（和 `DSH_WX_ADB`），或把 `config.json` 的 `python` / `adb_path` 填成绝对路径；脚本本身已不写死路径 |
 | `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
 | 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
 
@@ -334,7 +355,7 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 - **一台手机一个常驻会话**：采集器守 `home_chat` 那一间；换群＝改配置重启。想同时守多个群需要自己扩展。
 - **文字消息 only**：图/语音/视频目前"看了但不转述"；
 - **私聊不是独立通道**：把 `home_chat` 设成某私聊标题可以跑私聊，但消息是以"群会话"的身份进管线，**需要含唤醒词或 @ 才回**；
-- 微信大改版可能让"认字规则"失效，用 `collector/dump-ui.py` 重新采集样本校准即可（工具就位）；
+- 微信大改版可能让"认字规则"失效，用 `collector/dump-ui.py` 重新截几张屏存进 `calibration\`，照着截图调 `collector/ocr_channel.py` 的版面规则即可（截图还留着，XML 那路已随 uiautomator 一起废弃）；
 - 它看屏幕时手机屏幕被占用（一轮约 0.5–1.5s），别同时玩手机；
 - 一条回复 15–60 秒——日记本翻档案 + 教练润色的时间，这是人设不是故障；
 - 只支持 USB adb（无线调试未验证）；手机必须无锁屏、常亮、微信不被后台杀；

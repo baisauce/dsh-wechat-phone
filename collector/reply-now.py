@@ -14,11 +14,14 @@ import websockets  # noqa: E402
 
 from adb_client import Adb  # noqa: E402
 import ocr_channel as oc  # noqa: E402
+import bridge_cfg  # noqa: E402
 
-cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8-sig"))
+cfg = bridge_cfg.load_config()
 adb = Adb(cfg["adb_path"], cfg.get("serial") or None)
 w, h = adb.screen_size()
-tok = open(cfg["bridge_token_file"]).read().strip()
+tok = bridge_cfg.resolve_token(cfg)
+if not tok:
+    raise SystemExit("no bridge token: set bridge_token (or bridge_token_file) in collector/config.json")
 
 lines = oc.ocr_png(adb.screencap())
 msgs = oc.extract_chat_messages(lines, w, h)

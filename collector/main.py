@@ -32,6 +32,7 @@ sys.path.insert(0, HERE)
 from adb_client import Adb, AdbError  # noqa: E402
 from gate import Gate  # noqa: E402
 import ocr_channel as oc  # noqa: E402
+import bridge_cfg  # noqa: E402
 
 try:
     import websockets
@@ -103,8 +104,7 @@ class Collector:
         self.poll = float(cfg.get("list_poll_s", 5.0))
         self.gate = Gate(cfg, os.path.join(ROOT, "PAUSE"))
         bridge = cfg["bridge_ws"]
-        tok_file = cfg.get("bridge_token_file")
-        self.token = open(tok_file).read().strip() if tok_file and os.path.exists(tok_file) else cfg.get("bridge_token", "")
+        self.token = bridge_cfg.resolve_token(cfg)
         self.bridge_url = f"{bridge}?token={self.token}" if self.token else bridge
 
         self._ws = None
@@ -561,7 +561,8 @@ class Collector:
             log.exception("startup recovery")
 
     async def _periodic_sweep(self) -> None:
-        """Every sweep_s (default 60s): scroll up and re-read history pages to
+        """Runs every ~60s (hardcoded: sweep_beats = 60 / poll, see poll_loop) - scroll up
+        and re-read history pages to
         catch @-mentions missed while the reply flow held the UI lock.
         Replying to already-answered messages is impossible here: a mention is
         skipped if its context key is in seen, or its stable fingerprint was
@@ -993,8 +994,9 @@ class Collector:
 
 
 async def selftest(cfg: dict) -> None:
-    tok_file = cfg.get("bridge_token_file")
-    tok = open(tok_file).read().strip() if tok_file and os.path.exists(tok_file) else cfg.get("bridge_token", "")
+    tok = bridge_cfg.resolve_token(cfg)
+    if not tok:
+        raise SystemExit("selftest: no bridge token (bridge_token / bridge_token_file both empty)")
     async with websockets.connect(f"{cfg['bridge_ws']}?token={tok}", max_size=2_000_000) as ws:
         await ws.send(json.dumps({
             "t": "inbound", "kind": "group", "group": cfg.get("home_chat", "示例家庭群"),
@@ -1028,7 +1030,7 @@ def main() -> None:
             logging.FileHandler(os.path.join(ROOT, "logs", "collector.log"), encoding="utf-8"),
         ],
     )
-    cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8-sig"))
+    cfg = bridge_cfg.load_config()
     if args.selftest:
         asyncio.run(selftest(cfg))
         return

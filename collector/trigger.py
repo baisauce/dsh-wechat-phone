@@ -16,25 +16,34 @@ import websockets  # noqa: E402
 
 from adb_client import Adb  # noqa: E402
 import ocr_channel as oc  # noqa: E402
+import bridge_cfg  # noqa: E402
 import hashlib  # noqa: E402
 
 
 async def main() -> None:
     title_prefix = sys.argv[1] if len(sys.argv) > 1 else "示例家庭"
-    cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8-sig"))
+    cfg = bridge_cfg.load_config()
     adb = Adb(cfg["adb_path"], cfg.get("serial") or None)
     w, h = adb.screen_size()
-    tok = open(cfg["bridge_token_file"]).read().strip()
+    tok = bridge_cfg.resolve_token(cfg)
+    if not tok:
+        raise SystemExit("no bridge token: set bridge_token (or bridge_token_file) in collector/config.json")
 
-    # 1) navigate to the chat via list
-    focus = adb.current_focus()
-    if "LauncherUI" not in focus:
-        adb.shell("monkey -p com.tencent.mm -c android.intent.category.LAUNCHER 1")
-        time.sleep(3)
-    lines = oc.ocr_png(adb.screencap())
-    row = oc.find_conversation_row(lines, title_prefix, w)
+    # 1) navigate to the chat via the conversation list.
+    #    NOTE: never trust current_focus() here - on WeChat 8.0.7x the CHAT page also
+    #    reports LauncherUI (single-activity app), so focus cannot tell chat vs list.
+    def find_row():
+        return oc.find_conversation_row(oc.ocr_png(adb.screencap()), title_prefix, w)
+
+    adb.shell("monkey -p com.tencent.mm -c android.intent.category.LAUNCHER 1")
+    time.sleep(2)
+    row = find_row()
+    if row is None:  # probably sitting inside a chat: one BACK lands on the list
+        adb.keyevent(4)
+        time.sleep(1.2)
+        row = find_row()
     if row is None:
-        print("FAIL: 列表里找不到会话，请让手机停在微信会话列表页")
+        print("FAIL: 会话列表里找不到该会话（把标题前缀传对，或手动停在列表页再试）")
         return
     title = row.text
     # strip trailing member count for the canonical title

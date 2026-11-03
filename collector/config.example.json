@@ -1,7 +1,9 @@
 {
   "adb_path": "C:\\platform-tools\\adb.exe",
+  "python": "",
   "serial": "",
   "bridge_ws": "ws://127.0.0.1:6199",
+  "astrbot_config": "",
   "bridge_token": "",
   "bridge_token_file": "",
   "home_chat": "示例家庭群",

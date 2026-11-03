@@ -15,8 +15,12 @@ import uuid
 import websockets
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-_cfg = json.load(open(os.path.join(HERE, "config.json"), encoding="utf-8-sig"))
-_token = os.environ.get("BRIDGE_TOKEN") or open(_cfg["bridge_token_file"], encoding="utf-8").read().strip()
+import bridge_cfg  # noqa: E402  (script dir is already on sys.path)
+
+_cfg = bridge_cfg.load_config()
+_token = bridge_cfg.resolve_token(_cfg)
+if not _token:
+    raise SystemExit("no bridge token: set bridge_token (or bridge_token_file) in collector/config.json")
 URI = f"{_cfg.get('bridge_ws', 'ws://127.0.0.1:6199')}/?token={_token}"
 GROUP = os.environ.get("REPLAY_GROUP", "示例家庭群（回放H）")
 

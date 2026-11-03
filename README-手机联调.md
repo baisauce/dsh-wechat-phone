@@ -1,7 +1,7 @@
 # 手机侧联调准备（拿到备用机 / 用自己手机测试时照此办理）
 
 > 这份是 [README.md](README.md) 第 8–9 步的**手机侧细则**：每条物理操作都配一条可验证的判据命令。
-> 文中 `<项目目录>`＝你 clone 本仓库的位置，`<AstrBot目录>`＝AstrBot 工作目录，`<py>`＝与 AstrBot **同一个** Python 解释器，`<工具目录>\platform-tools\adb.exe`＝你自己下载的 adb（见 README 第 8 步）。**不要把别人机器上的绝对路径照抄进来。**
+> 文中 `<项目目录>`＝你 clone 本仓库的位置，`<AstrBot目录>`＝AstrBot 工作目录，`<py>`＝你给采集器选定的那个 Python（独立进程，自己的 venv 也行；想省事就直接用 AstrBot 那个），`<工具目录>\platform-tools\adb.exe`＝你自己下载的 adb（见 README 第 8 步）。**不要把别人机器上的绝对路径照抄进来。**
 
 ## 0. 安全前提（务必先读）
 
@@ -70,7 +70,7 @@
 ```powershell
 # 1) 先让 AstrBot 起来（含翻译插座）。用什么方式起就用你第 3 步那套，然后验端口：
 Test-NetConnection 127.0.0.1 -Port 6199      # 期望 TcpTestSucceeded : True
-# 2) 体检（十项，红灯会告诉你哪个插座没电；AstrBot 没起时第 9、10 项必红）
+# 2) 体检（A 电脑/AstrBot 侧 + B 手机侧，不插手机也能先查 A；AstrBot 没起时端口与 6185 两项必红）
 cd <项目目录>\collector
 <py> preflight.py
 # 3) 上岗（首次建议前台跑，方便看日志）
@@ -105,7 +105,9 @@ cd <项目目录>\collector
 6. **`reply throttled/dropped`** → 闸门限流（第 0 步），属正常保护
 7. **`reply for 'xxx' ignored (home-only mode)`** → 回复目标是别的会话，被单会话规则丢弃：核对 `home_chat`
 
-要 7×24 常驻：仓库带 `start-collector-bg.bat` + `collector-watchdog.ps1`（崩溃 15 秒重启、命名互斥防双开），**但脚本里写的是作者机绝对路径**，换机器请把开头的 python / main.py / adb / 日志路径改成你自己的，或让 AI 助手按你的目录重新生成。停止服务时先建 `PAUSE`。
+要 7×24 常驻：仓库带 `start-collector-bg.bat` + `collector-watchdog.ps1`（命名互斥防双开；正常崩溃 15 秒重启，连续 3 次秒退会自动退避到 60 秒一轮）。**脚本里没有任何机器路径**：它们先调 `tools\resolve-env.ps1`，按「环境变量 `DSH_WX_PYTHON`/`DSH_WX_ADB` → `collector\config.json` 的 `python`/`adb_path` → 上一级目录的 `python\python.exe` 与 `tools\platform-tools\adb.exe` → PATH」的顺序找解释器和 adb；实在找不到会打 `python not resolved` 并退出（`run-once.cmd` 返回 3、watchdog 返回 4），此时用上面两个环境变量或 `config.json` 字段硬指定即可。想知道守护将用哪个解释器，直接跑 `powershell -File tools\resolve-env.ps1` 看 `PY=` 那行。
+
+**停机纪律**：先建 `PAUSE`，等日志这一轮安静下来，再按 **watchdog → cmd 包装 → python** 的顺序停（反过来守护会把它重启回来）。手机没插时 `main.py` 会以 `no adb device` 退出、守护按上面的退避节奏重试，插上就自愈，不用人工干预。注意：**从某个终端里 `Start-Process` 起的守护，会随那个终端的进程树一起被回收**——要长期常驻就用「启动」文件夹快捷方式或任务计划程序拉起，别挂在会话窗口下。
 
 ## 已知限制（诚实清单）
 

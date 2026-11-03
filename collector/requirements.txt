@@ -1,4 +1,4 @@
-# 采集器依赖（必须装进与 AstrBot **同一个** Python 环境——插件侧也要 import websockets）
+# 采集器依赖（采集器是独立进程，装进你选定的那个 Python/venv 即可；AstrBot 插件跑在 AstrBot 进程里，websockets 由 AstrBot 自带）
 # 安装： <py> -m pip install -r requirements.txt
 # 国内网络直连失败时换镜像： <py> -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 websockets>=12
