@@ -1,0 +1,48 @@
+{
+  "adb_path": "C:\\platform-tools\\adb.exe",
+  "serial": "",
+  "bridge_ws": "ws://127.0.0.1:6199",
+  "bridge_token_file": "C:\\path\\to\\AstrBot\\logs\\.bridge_token",
+  "bot_nicknames": [
+    "小鲸",
+    "鲸鲸",
+    "大鲸",
+    "阿鲸"
+  ],
+  "notif_poll_s": 2.0,
+  "input_method": "adbkeyboard",
+  "outbound_chats": null,
+  "gate": {
+    "session_window_s": 60,
+    "session_max": 4,
+    "session_min_gap_s": 3,
+    "hourly_max": 20,
+    "daily_max": 200,
+    "quiet_hours": [
+      0,
+      0
+    ],
+    "delay_min_s": 2.0,
+    "delay_max_s": 8.0,
+    "typing_cps_min": 4,
+    "typing_cps_max": 9
+  },
+  "watch_chats": [
+    "示例家庭群",
+    "家人B",
+    "家人C"
+  ],
+  "home_chat": "示例家庭群",
+  "wake_keywords": [
+    "小鲸",
+    "鲸鲸",
+    "大鲸",
+    "deepseek"
+  ],
+  "history_pages": 3,
+  "catchup_pages": 2,
+  "quote_gap": 4,
+  "list_poll_s": 2.0,
+  "sweep_pages": 2,
+  "sweep_s": 60
+}

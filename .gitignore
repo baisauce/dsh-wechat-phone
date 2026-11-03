@@ -1,0 +1,24 @@
+# —— 隐私：以下一律不提交 ——
+# 运行时配置（真实群名/白名单/token 路径）
+collector/config.json
+# 桥 token
+bridge_token.txt
+*.token
+# 全部运行日志（含真实聊天内容！）
+logs/
+collector/replay_result*.json
+# 采集器运行时状态（游标/去重表，含真实聊天内容！）
+collector/state.json
+# 校准截图与 UI dump（含真实聊天画面！）
+calibration/
+# 输入法 APK：让使用者从上游自取（senzhk/ADBKeyBoard）
+assets/*.apk
+# 应急暂停标记与备份
+PAUSE
+*.bak*
+# 真实回放语料（如需要，放本地文件，永不提交）
+*.local.json
+# Python 产物
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,12 @@
+name: astrbot_wechat_phone_bridge
+display_name: 微信群手机桥接 (WeChat Phone Bridge)
+desc: 通过局域网 WebSocket 连接 PC 侧 ADB/OCR 采集器，实现微信群全自动收发。官方微信客户端、零进程注入、运行期零公网依赖。
+author: ""
+version: 0.1.0
+repo: ""
+support_platforms:
+  - wechat_phone_bridge
+keywords:
+  - wechat
+  - bridge
+  - automation
