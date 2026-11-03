@@ -235,7 +235,7 @@ cd dsh-wechat-phone\collector
 <py> -m pip install -r requirements.txt
 #    PyPI 直连慢/失败就换镜像：<py> -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# ② 零硬件离线自检（不插手机、不联网也能跑，24 项逻辑题，约 1 分钟）
+# ② 零硬件离线自检（不插手机、不联网也能跑，29 项逻辑题，约 1 分钟）
 #    必须指向"示例配置"跑，否则会用你机器上的真群名做断言
 $env:SIM_CONFIG = (Resolve-Path .\config.example.json).Path
 <py> sim_all.py            # 全绿(exit 0) 才继续；红了先按报错补齐缺的包，别急着连手机
@@ -271,6 +271,7 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 | `bridge_ws` | 默认即可 | `ws://127.0.0.1:6199` |
 | `astrbot_config` | 选填 | AstrBot `data\cmd_config.json` 的路径；留空则按"仓库上一级\data\"猜。只给 preflight 做**只读**核对用 |
 | `gate.*` | 默认即可 | 限速/静默/延迟；`quiet_hours` 两个数字**相等＝关闭夜间静默** |
+| `quote_gap` | 默认即可 | 引用间隔，默认 **1**＝被答的那条下面只要还有一条新消息，回复就带引用卡；调到很大＝几乎永远裸回 |
 | `input_method` | 默认即可 | `adbkeyboard`；全英文测试可用 `ascii` |
 
 > 🛑 **`watch_chats` / `outbound_chats` / `notif_poll_s` 是早期"列表轮询 + 通知"架构留下的字段，当前代码不读取它们**——别拿它们当白名单（真白名单在第 7 步的 `allowed_chats` + 本步的 `home_chat`）。示例配置里已删掉这些误导性字段。
@@ -415,6 +416,8 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 | 手敲 `python main.py` 报"已有采集器在跑" | 采集器自带单实例锁（守护只管守护自己的互斥体，两个采集器会抢同一块屏幕：重复回复、还可能把半截引文草稿留在输入框里） | 别双开：要么直接看 `logs\collector.log`，要么按 **watchdog → cmd 包装 → python** 停掉守护再前台调试。`--selftest` 不受此锁限制，可与守护并行 |
 | `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
 | 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
+| **群里最后一条永远不回**，要等有人再发一条它才"突然"回答上一句 | 贴底时微信把最新气泡停在输入框正上方（实测 1080×2412 上它中心在 0.90h），而判读窗口旧上限是 0.86h——**最新那条落在死区里压根没被读到** | 读屏窗口下沿改为 `max(0.86h, h-190)`：大屏多覆盖一段、短屏行为不变，并留 190px 输入框安全带（草稿不会被当消息读）。离线习题 E12 已钉住 |
+| 回复看不出是在答谁（像自言自语） | 引用触发太保守：旧默认要隔满 4 条才引用 | 现默认 `quote_gap=1`——被答的那条下面**只要多了一条**消息就长按它点「引用」；只有答的正是屏幕上最新一条时才裸回。离线习题 E11 已钉住 |
 
 ## License / 致谢
 

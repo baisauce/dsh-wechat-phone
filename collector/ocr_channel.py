@@ -91,7 +91,14 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
       - own bubbles are right-aligned: text left edge pushed right (>0.24w)
       - continuation lines of a multi-line bubble sit <80px below the previous
     """
-    body = sorted((l for l in lines if 200 < l.cy < h * 0.86), key=lambda l: l.cy)
+    # Bottom limit: WeChat pins the newest bubble just above the input bar, so a flat
+    # 0.86h cut silently drops the one message that matters most (measured on a 1080x2412
+    # phone: newest bubble at 0.90h, its sender label at 0.87h - both outside the window,
+    # so the last message in a quiet group was never read at all). Take the deeper of
+    # 0.86h and (h - 190): tall screens gain coverage, short ones keep the old behaviour,
+    # and the 190px guard band keeps the input bar / an unsent draft out of the reading zone.
+    body_bottom = max(h * 0.86, h - 190)
+    body = sorted((l for l in lines if 200 < l.cy < body_bottom), key=lambda l: l.cy)
     raw: list[dict] = []
     pending_sender: str | None = None
     i, n = 0, len(body)

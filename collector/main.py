@@ -77,6 +77,10 @@ def norm_title(t: str) -> str:
 _SENT_END = "。！？!?～~…"
 _PUNCT_KEEP = "。！？!?～~…，,、;；："
 
+# Quote the answered message whenever at least one newer bubble sits between it and the
+# reply. Raise quote_gap in config.json only if a busy group makes quotes feel mechanical.
+QUOTE_GAP_DEFAULT = 1
+
 
 def flatten_reply(text: str) -> str:
     """Collapse LLM line breaks into ONE natural WeChat line.
@@ -822,11 +826,13 @@ class Collector:
         return False
 
     def _maybe_quote_sync(self, reply_to: str | None) -> None:
-        """Gap rule: answer is a QUOTE when the answered message sits >=N newer
-        msgs behind (or needs scrolling up to find). Otherwise plain reply."""
+        """Gap rule: the reply is a QUOTE as soon as the answered message is even ONE
+        bubble behind (or needs scrolling up to find). Only a reply that lands directly
+        under the newest message goes out plain - otherwise the group can't tell which
+        question this answer belongs to."""
         if not reply_to:
             return
-        need = int(self.cfg.get("quote_gap", 4))
+        need = int(self.cfg.get("quote_gap", QUOTE_GAP_DEFAULT))
         loc = self._locate_for_quote_sync(reply_to)
         if loc is None:
             log.info("quote target scrolled away unrecoverably, plain reply")

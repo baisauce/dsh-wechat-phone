@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""sim_extreme.py — 时序/去重压力习题（10 场景 / 16 项检查）。
+"""sim_extreme.py — 时序/去重压力习题（12 场景 / 21 项检查）。
 
 历史标签对照：E1=S8+S10+S23前态, E2=S9, E3=S13, E4=S16, E5=S17,
 E6=S12+S18(引用家族), E7=S20(竞态), E8=S21(自聊回声), E9=S22(单行化),
-E10=S23(pending补救)。全部 adb+ws 模拟，无网络无真机。
+E10=S23(pending补救), E11=引用间隔(隔一条即引用), E12=贴底最新气泡可读。
+全部 adb+ws 模拟，无网络无真机。
 语料为脱敏示例名：本机跑请用 SIM_CONFIG 指向 config.example.json（见 sim_all.py）。
 """
 import asyncio
@@ -269,6 +270,34 @@ async def main():
     coly._fp_recent[fpy] = time.time()
     await coly._startup_recovery()
     check("已答@不得重新入队", len(coly._backlog) == 0, str(coly._backlog))
+
+    print("E11: 引用间隔——隔一条就要引用，紧挨着才裸回")
+    quoted: list[str] = []
+    cfgq = dict(cfg); cfgq["quote_gap"] = 1
+    colq = SimCollector([[mk("@鲸鲸 帮我看看这个", "甲"), mk("我也想知道", "乙")]])
+    colq.cfg = cfgq
+    colq._quote_bubble_sync = lambda t: (quoted.append(t) or True)
+    colq._maybe_quote_sync("@鲸鲸 帮我看看这个")
+    check("被答消息后面多了 1 条 -> 引用", quoted == ["@鲸鲸 帮我看看这个"], str(quoted))
+    quoted.clear()
+    colq2 = SimCollector([[mk("@鲸鲸 帮我看看这个", "甲")]])
+    colq2.cfg = cfgq
+    colq2._quote_bubble_sync = lambda t: (quoted.append(t) or True)
+    colq2._maybe_quote_sync("@鲸鲸 帮我看看这个")
+    check("答的就是屏幕上最新一条 -> 裸回不引用", quoted == [], str(quoted))
+    check("代码默认阈值＝1（不再要求隔满 4 条）", M.QUOTE_GAP_DEFAULT == 1, str(M.QUOTE_GAP_DEFAULT))
+
+    print("E12: 贴底时最新气泡必须读得到（1080x2412 实测气泡中心 0.90h）")
+    import ocr_channel as OC  # noqa: E402
+    L = OC.Line
+    scr = [L(210.0, 2093.0, "家人A", 0.99, 180.0, 240.0, 2073.0, 2113.0),
+           L(509.0, 2172.0, "@鲸鲸 求求你别犯傻了", 0.97, 300.0, 720.0, 2140.0, 2204.0),
+           L(64.0, 2337.0, "の", 0.94, 30.0, 100.0, 2310.0, 2364.0)]
+    got = OC.extract_chat_messages(scr, 1080, 2412)
+    check("0.90h 的最新气泡被读到并挂上发送者",
+          any("求求你别犯傻了" in m["text"] for m in got)
+          and any((m.get("sender") or "") == "家人A" for m in got), str(got))
+    check("输入框那行(0.97h)不会被当成消息", all(m["text"] != "の" for m in got), str(got))
 
     print(f"\n===== 极端场景结果: {PASS} passed, {FAIL} failed =====")
     return 1 if FAIL else 0

@@ -23,7 +23,7 @@
   "at_spread_s": 6.0,
   "history_pages": 3,
   "catchup_pages": 2,
-  "quote_gap": 4,
+  "quote_gap": 1,
   "list_poll_s": 2.0,
   "sweep_pages": 2,
   "gate": {
