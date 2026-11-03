@@ -181,6 +181,8 @@ Copy-Item -Recurse dsh-wechat-phone\adapter\data-plugins\astrbot_wechat_phone_br
 
 平台类型的内部 id 是 `wechat_phone_bridge`，在 AstrBot 列表里显示为「微信群手机桥接 (WeChat Phone Bridge)」——找名字时按这几个字任一个都能对上。
 
+> **名单怎么填才不会装死**：采集器上报的会话标题是**规范化**过的（去掉空格、去掉群名尾巴上的成员数 `(12)`，因为那个数字每进一个人就变一次）。适配器两侧都会先做同样的规范化再比对，所以你把带空格/带成员数的原始群名粘进 `allowed_chats` 也能命中；`allowed_chats` 既可以写成 JSON 数组，也可以手打成 `A,B、C` 一个字符串，两种都吃。唯一要记住的是：**改了 `auto_accept` 或 `allowed_chats` 要重启 AstrBot**，平台实例是启动时读配置的。
+
 > 🔑 **门禁卡闭环（新手必踩，一次讲透）**：这个 token 有**两个存放点**，必须**逐字相同**：
 >
 > 1. AstrBot 侧：平台配置里的 `token` 字段（控制室手填）；
