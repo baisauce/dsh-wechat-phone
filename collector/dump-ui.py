@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""dump-ui.py — save a labelled UI-tree sample for wechat_ui.py calibration.
+"""dump-ui.py — save a labelled screenshot sample for OCR-layout calibration.
 
-Usage:
+用法：先在手机上停到对应页面，再：
   python dump-ui.py home        # 微信会话列表页
   python dump-ui.py chat        # 某个群/私聊聊天页
   python dump-ui.py chat-group  # 群聊页（带发送者昵称样本）
-把输出文件发给开发者即可校准解析器。
+输出会存到 calibration/（*.xml 是 uiautomator 快照，微信 8.0.7+ 后已失效，仅存档；
+*.png 是截图，用来对照调 ocr_channel.py 的版面规则）。
 """
 import json
 import os

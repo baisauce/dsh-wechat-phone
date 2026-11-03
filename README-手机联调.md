@@ -80,7 +80,7 @@ cd <项目目录>\collector
 
 想先不接手机验一遍"大脑 ↔ 插座"：`<py> main.py --selftest`（不碰 adb，直接对桥发一帧等回复）。
 
-## 6. 冒烟测试顺序（五步 = 五个确保）
+## 6. 冒烟测试顺序（启动行 + 五个确保）
 
 日志文件：`<项目目录>\logs\collector.log`。下面每一步都给了**期望出现的日志锚点**，对不上就是那一层断了，别跳着查。
 
@@ -114,5 +114,5 @@ cd <项目目录>\collector
 - 读屏**只靠 OCR**（`adb exec-out screencap` + RapidOCR），一轮约 0.5–1.5s，期间手机屏幕被占用，别同时玩手机；
 - 只处理文字消息，图/语音/视频跳过；
 - 免打扰/折叠的群消息不会主动扫（当前是单会话驻留模式）；
-- 微信大版本更新可能改界面结构，届时用 `collector/dump-ui.py` 重采样本、校准 `collector/wechat_ui.py` 的启发式；
+- 微信大版本更新可能改界面结构，届时用 `collector/dump-ui.py` 重采样本（截图）、校准 `collector/ocr_channel.py` 的版面规则；旧的 `wechat_ui.py`（uiautomator 解析）已随微信 8.0.7+ 失效，不再参与运行；
 - 无线 adb 调试未验证，请用数据线。

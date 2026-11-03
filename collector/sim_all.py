@@ -5,7 +5,7 @@
   $env:SIM_CONFIG = config.example.json 的绝对路径
   python sim_all.py
 覆盖：T1-T3 唤醒/游标/引用定位（sim_scenarios，8 项）
-     + E1-E10 时序压力：历史追答/重启去重/pending补救/竞态/回声/单行化（sim_extreme，17 项）。
+     + E1-E10 时序压力：历史追答/重启去重/pending补救/竞态/回声/单行化（sim_extreme，16 项）。
 全绿 = exit 0。改测试只为省时：断言合并、S8 类"等满超时"改提前返回。
 """
 import asyncio

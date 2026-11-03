@@ -18,6 +18,11 @@ import socket
 import sys
 import urllib.request
 
+try:  # 控制台不是 UTF-8 时，别让中文报告变成乱码
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from adb_client import Adb, AdbError  # noqa: E402
@@ -128,8 +133,12 @@ def check_pc(cfg: dict) -> None:
 
 
 def check_services(cfg: dict) -> None:
-    port = int(str(cfg.get("bridge_ws") or "").rsplit(":", 1)[-1]) if ":" in str(cfg.get("bridge_ws") or "") else 6199
-    if not port or port > 65535:
+    # 从 bridge_ws 里取端口；"ws://127.0.0.1" 这种缺端口的写法不能让整份体检崩掉
+    port = 6199
+    tail = str(cfg.get("bridge_ws") or "").rsplit(":", 1)[-1].strip()
+    if tail.isdigit():
+        port = int(tail)
+    if not (0 < port <= 65535):
         port = 6199
     s = socket.socket()
     try:

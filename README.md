@@ -38,7 +38,7 @@
 
 微信对个人号的态度是：**想和微信群聊？没有接口**。市面上的野路子（协议号、hook、注入客户端）等于让 AI 伪造一个假微信去骗腾讯——账号风险极大，也违背本项目底线。我们的路线是笨功夫但干净的路：让 AI 操作**一台真实的手机上的真实微信**，在腾讯眼里，手机屏幕前就是"一个人"。这台手机用**小号**登录——它扮演身体，所有风险由小号承担，和你的主力微信号彻底无关。
 
-> 本项目还有一条贯穿始终的设计主线——**大脑只管说话，看屏幕和动手全交给固定代码**。为什么这么选、和另外两条路线差在哪，写在文末附录 D；赶时间可以先跳过。
+> 本项目还有一条贯穿始终的设计主线——**大脑只管说话，看屏幕和动手全交给固定代码**。为什么这么选、和另外两条路线差在哪，写在附录 D；赶时间可以先跳过。
 
 ---
 
@@ -297,53 +297,6 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 
 ---
 
-## 附录 A：组件位置速查
-
-| 位置 | 文件 | 职责（对照正文比喻） |
-|---|---|---|
-| PC | `collector/main.py` | 眼睛和手的主循环：认屏→去重→通报→打字 |
-| PC | `collector/ocr_channel.py` | "看"的通道——**现行唯一读屏入口**（OCR 认字） |
-| PC | `collector/wechat_ui.py`（旧 uiautomator 解析，**已不参与运行**） | 微信 8.0.7+ 后 uiautomator 失效，仅留作历史参考 |
-| PC | `collector/gate.py` | 🚦 礼仪老师：限速、静默时段、随机延迟 |
-| PC | `collector/adb_client.py` | 数据线两端的操作封装 |
-| PC | `collector/requirements.txt` | 依赖清单（第 9 步用） |
-| PC | `collector/preflight.py` `collector/dump-ui.py` | 体检（含与 AstrBot 平台配置的只读比对）/ 存样本（dump-ui 会存 XML+截图，截图可作 OCR 校准样本；XML 那路随 uiautomator 一起废了） |
-| PC | `collector/bridge_cfg.py` | 读 `config.json` 与门禁卡的**唯一入口**（env → 文件 → 内联），附带只读解析 AstrBot 平台配置；所有一次性工具都走它 |
-| PC | `collector/trigger.py` `collector/reply-now.py` `collector/rescue-send.py` | 手动触发 / 应急代答 / 补发救援 |
-| PC | `collector/sim_all.py`（当前套件）`collector/sim_scenarios.py` `collector/sim_extreme.py` | 离线演习题（不联网不接手机也能验证逻辑） |
-| PC | `start-collector.bat` `start-collector-bg.bat` `collector-watchdog.ps1` | 常驻与守护（**路径无关**，机器相关路径统一由 `tools/resolve-env.ps1` 解析） |
-| PC | `tools/resolve-env.ps1` | 唯一的"找 python / 找 adb"入口：环境变量 → `config.json` → 常见布局 → PATH |
-| PC | `logs/collector.log` `collector/state.json` | 运行日志 / 游标与去重表（含真实聊天，**永不提交**） |
-| AstrBot | `adapter/data-plugins/astrbot_wechat_phone_bridge` | 🔌 翻译插座（WS 服务端 + 事件注册） |
-
-## 附录 B：踩坑速查（都是真机换来的，给未来的你和你的 AI 助手）
-
-| 现象 | 为什么 | 怎么办 |
-|---|---|---|
-| 用系统工具读微信界面返回空白 | **微信 8.0.7+ 关了"提词器"**（反 uiautomator） | 采集器用 OCR"亲眼看屏幕"（RapidOCR 本地跑，置信度低于 0.6 的行丢弃）——**这也是当前唯一读屏方式，通知/列表通道已废弃** |
-| 配置里填了 `watch_chats` 却照样不理人／照样理人 | 那是旧架构字段，**代码不读** | 白名单设在 AstrBot 平台配置：`auto_accept=false` + `allowed_chats`；采集器侧靠 `home_chat` 只守一间 |
-| preflight"桥接 token"红灯 | AstrBot 不会自动写 token 文件 | 按第 7 步"门禁卡闭环"：用 `bridge_token` 内联，或自己 `Set-Content` 创建那个文件 |
-| preflight 报"token 两侧不一致"／"AstrBot 侧 token 为空" | 一边填了没同步，或 AstrBot 侧留空 | 两边填同一串。注意**留空比填错更危险**：适配器只在 token 非空时校验，留空＝本机任何进程都能当采集器接进来 |
-| 6185 能开、名单却拦不住人 | AstrBot 侧 `ws_host` 还是默认 `0.0.0.0`，6199 暴露给整个局域网 | 平台配置改 `ws_host=127.0.0.1`（采集器就在本机）；preflight 会 WARN 提醒 |
-| 名单写了但谁都能触发它 | AstrBot 侧 `auto_accept=true`＝来者不拒，`allowed_chats` 直接被跳过 | 设 `auto_accept=false` 再把 `home_chat` 写进 `allowed_chats`；preflight 两项都会 WARN |
-| 采集器连上 6199 但 AstrBot 说 `unauthorized`／无 `[wxb] collector connected` | 两边 token 不一致 | 逐字核对；注意别混入空格/换行（`Set-Content` 加 `-NoNewline`） |
-| 打字能进框，但按回车不发送 | 微信输入框不认默认回车 | 三级敲门：编辑器动作→回车键→OCR 找到发送按钮直接点；每次敲完看一眼输入框空没空 |
-| AI 回复自己，无限套娃 | 分不清气泡是我发的还是别人发的 | 靠位置：贴右缘=自己发的；再记一份"我说过的话"防漏 |
-| 同一句话被回两遍 | OCR 断行每次略有不同 | 每句话盖"已处理"图章：只取头尾字符做指纹，断行再抖也认得 |
-| 重进一个群后去重全失效 | 群标题上挂着成员数 `(12)`，变一次对不上 | 指纹前先把标题的计数抹掉 |
-| 群里 @ 了它没反应 | 微信 @ 显示的是**你给对方设的备注名**，不是你设的群昵称 | 把 @ 里出现的所有写法同时加进 `bot_nicknames` 与 `wake_keywords`（两处都要） |
-| 唤醒词有，但一句话都不转 | `wake_keywords` 只在**采集器 config** 那份生效时才转发 | 采集器和 AstrBot 各有一份唤醒词，**两份必须同步** |
-| 半夜不回复 / 白天突然静默 | `quiet_hours` 两个数字决定静默窗口 | 想夜间静默就填 `[1, 7.5]`（01:00–07:30）；**两个数字相等＝关闭静默** |
-| 手机锁屏后彻底失明 | 采集器只会亮屏，**不会解锁** | 关掉锁屏密码；开发者选项开「充电时不休屏」 |
-| 电脑睡一觉链路就断 | 睡眠会掐断 adb 与截图 | 电源计划设成不睡眠（`powercfg` 或设置里改） |
-| 国产 ROM 上什么都读不到 | 系统把微信后台杀了 | 电池设置里把微信设为"不优化/允许后台活动" |
-| AstrBot 收了消息但回复凭空消失 | **框架基类的 `send()` 只记录不投递**（新手杀手） | 自定义平台必须自己实现事件类，覆写 `send()` 调 `platform.send_by_session`（本项目已实现） |
-| 群里 @ 了它不醒（插件侧） | 唤醒判定要消息里带 @ 组件 | 把 @机器人 构造成消息的**第一个组件**（配合 `enable_at`，本项目已实现） |
-| 回复又慢又"冷场感" | 表达教练把群客一律按冷客延迟 | cold 档 10/25→3/8、总封顶 90→32s（字段名见第 10 步） |
-| 一键启动脚本说 `python not resolved` / 秒退 | 自动解析器没找到解释器 | 设环境变量 `DSH_WX_PYTHON`（和 `DSH_WX_ADB`），或把 `config.json` 的 `python` / `adb_path` 填成绝对路径；脚本本身已不写死路径 |
-| `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
-| 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
-
 ## 附录 C：安全三问（评估任何微信自动化都先过这三关）
 
 1. **动没动客户端？** 零。官方微信原样跑，AI 只在外面操作手机，不注入、不 hook、不取任何凭据。
@@ -412,6 +365,53 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 一句话各自定位：**他们替你省下"操作微信"的手，我们替你省下"账号和名声"的险**。两条路的痛点不在同一层——前者站在"读本地库 + 大号身份"的灰色区域上，后者站在"小号模拟真人"的行为风险上。选型前想清楚哪份风险你愿意扛；两边共用一个物理前提：都得多一台设备或一个专用环境，都劝你别拿主力号冒险。
 
 **从这位邻居身上学到的（已列入待办）**：① 系统会话默认屏蔽名单（微信运动/微信团队/微信支付/订阅号消息/折叠的群聊，开箱即不进管线）；② **DRYRUN 彩排模式**——比 PAUSE 温和一档：照常记录"该发什么"，就是不打字上屏；③ **图片视觉描述**——看到 `[图片]` 气泡时截那块区域，交给视觉模型转述成一句话再进管线，别只"看图不转述"；④ **按天分群的聊天日记** markdown（没点名也全量留档，可审计可回溯）；⑤ **配置热加载**（改完 30 秒自动生效，不重启服务）。
+
+## 附录 A：组件位置速查
+
+| 位置 | 文件 | 职责（对照正文比喻） |
+|---|---|---|
+| PC | `collector/main.py` | 眼睛和手的主循环：认屏→去重→通报→打字 |
+| PC | `collector/ocr_channel.py` | "看"的通道——**现行唯一读屏入口**（OCR 认字） |
+| PC | `collector/wechat_ui.py`（旧 uiautomator 解析，**已不参与运行**） | 微信 8.0.7+ 后 uiautomator 失效，仅留作历史参考 |
+| PC | `collector/gate.py` | 🚦 礼仪老师：限速、静默时段、随机延迟 |
+| PC | `collector/adb_client.py` | 数据线两端的操作封装 |
+| PC | `collector/requirements.txt` | 依赖清单（第 9 步用） |
+| PC | `collector/preflight.py` `collector/dump-ui.py` | 体检（含与 AstrBot 平台配置的只读比对）/ 存样本（dump-ui 会存 XML+截图，截图可作 OCR 校准样本；XML 那路随 uiautomator 一起废了） |
+| PC | `collector/bridge_cfg.py` | 读 `config.json` 与门禁卡的**唯一入口**（env → 文件 → 内联），附带只读解析 AstrBot 平台配置；所有一次性工具都走它 |
+| PC | `collector/trigger.py` `collector/reply-now.py` `collector/rescue-send.py` | 手动触发 / 应急代答 / 补发救援 |
+| PC | `collector/sim_all.py`（当前套件）`collector/sim_scenarios.py` `collector/sim_extreme.py` | 离线演习题（不联网不接手机也能验证逻辑） |
+| PC | `start-collector.bat` `start-collector-bg.bat` `collector-watchdog.ps1` | 常驻与守护（**路径无关**，机器相关路径统一由 `tools/resolve-env.ps1` 解析） |
+| PC | `tools/resolve-env.ps1` | 唯一的"找 python / 找 adb"入口：环境变量 → `config.json` → 常见布局 → PATH |
+| PC | `logs/collector.log` `collector/state.json` | 运行日志 / 游标与去重表（含真实聊天，**永不提交**） |
+| AstrBot | `adapter/data-plugins/astrbot_wechat_phone_bridge` | 🔌 翻译插座（WS 服务端 + 事件注册） |
+
+## 附录 B：踩坑速查（都是真机换来的，给未来的你和你的 AI 助手）
+
+| 现象 | 为什么 | 怎么办 |
+|---|---|---|
+| 用系统工具读微信界面返回空白 | **微信 8.0.7+ 关了"提词器"**（反 uiautomator） | 采集器用 OCR"亲眼看屏幕"（RapidOCR 本地跑，置信度低于 0.6 的行丢弃）——**这也是当前唯一读屏方式，通知/列表通道已废弃** |
+| 配置里填了 `watch_chats` 却照样不理人／照样理人 | 那是旧架构字段，**代码不读** | 白名单设在 AstrBot 平台配置：`auto_accept=false` + `allowed_chats`；采集器侧靠 `home_chat` 只守一间 |
+| preflight"桥接 token"红灯 | AstrBot 不会自动写 token 文件 | 按第 7 步"门禁卡闭环"：用 `bridge_token` 内联，或自己 `Set-Content` 创建那个文件 |
+| preflight 报"token 两侧不一致"／"AstrBot 侧 token 为空" | 一边填了没同步，或 AstrBot 侧留空 | 两边填同一串。注意**留空比填错更危险**：适配器只在 token 非空时校验，留空＝本机任何进程都能当采集器接进来 |
+| 6185 能开、名单却拦不住人 | AstrBot 侧 `ws_host` 还是默认 `0.0.0.0`，6199 暴露给整个局域网 | 平台配置改 `ws_host=127.0.0.1`（采集器就在本机）；preflight 会 WARN 提醒 |
+| 名单写了但谁都能触发它 | AstrBot 侧 `auto_accept=true`＝来者不拒，`allowed_chats` 直接被跳过 | 设 `auto_accept=false` 再把 `home_chat` 写进 `allowed_chats`；preflight 两项都会 WARN |
+| 采集器连上 6199 但 AstrBot 说 `unauthorized`／无 `[wxb] collector connected` | 两边 token 不一致 | 逐字核对；注意别混入空格/换行（`Set-Content` 加 `-NoNewline`） |
+| 打字能进框，但按回车不发送 | 微信输入框不认默认回车 | 三级敲门：编辑器动作→回车键→OCR 找到发送按钮直接点；每次敲完看一眼输入框空没空 |
+| AI 回复自己，无限套娃 | 分不清气泡是我发的还是别人发的 | 靠位置：贴右缘=自己发的；再记一份"我说过的话"防漏 |
+| 同一句话被回两遍 | OCR 断行每次略有不同 | 每句话盖"已处理"图章：只取头尾字符做指纹，断行再抖也认得 |
+| 重进一个群后去重全失效 | 群标题上挂着成员数 `(12)`，变一次对不上 | 指纹前先把标题的计数抹掉 |
+| 群里 @ 了它没反应 | 微信 @ 显示的是**你给对方设的备注名**，不是你设的群昵称 | 把 @ 里出现的所有写法同时加进 `bot_nicknames` 与 `wake_keywords`（两处都要） |
+| 唤醒词有，但一句话都不转 | `wake_keywords` 只在**采集器 config** 那份生效时才转发 | 采集器和 AstrBot 各有一份唤醒词，**两份必须同步** |
+| 半夜不回复 / 白天突然静默 | `quiet_hours` 两个数字决定静默窗口 | 想夜间静默就填 `[1, 7.5]`（01:00–07:30）；**两个数字相等＝关闭静默** |
+| 手机锁屏后彻底失明 | 采集器只会亮屏，**不会解锁** | 关掉锁屏密码；开发者选项开「充电时不休屏」 |
+| 电脑睡一觉链路就断 | 睡眠会掐断 adb 与截图 | 电源计划设成不睡眠（`powercfg` 或设置里改） |
+| 国产 ROM 上什么都读不到 | 系统把微信后台杀了 | 电池设置里把微信设为"不优化/允许后台活动" |
+| AstrBot 收了消息但回复凭空消失 | **框架基类的 `send()` 只记录不投递**（新手杀手） | 自定义平台必须自己实现事件类，覆写 `send()` 调 `platform.send_by_session`（本项目已实现） |
+| 群里 @ 了它不醒（插件侧） | 唤醒判定要消息里带 @ 组件 | 把 @机器人 构造成消息的**第一个组件**（配合 `enable_at`，本项目已实现） |
+| 回复又慢又"冷场感" | 表达教练把群客一律按冷客延迟 | cold 档 10/25→3/8、总封顶 90→32s（字段名见第 10 步） |
+| 一键启动脚本说 `python not resolved` / 秒退 | 自动解析器没找到解释器 | 设环境变量 `DSH_WX_PYTHON`（和 `DSH_WX_ADB`），或把 `config.json` 的 `python` / `adb_path` 填成绝对路径；脚本本身已不写死路径 |
+| `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
+| 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
 
 ## License / 致谢
 
