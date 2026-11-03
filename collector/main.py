@@ -1016,6 +1016,70 @@ async def selftest(cfg: dict) -> None:
             raise SystemExit(2)
 
 
+_SINGLE_NAME = "Local\\AstrBotWxCollectorMain"
+
+
+def acquire_singleton_lock():
+    """Refuse a second collector on the same machine.
+
+    Two collectors = two OCR loops fighting over one phone screen: duplicated
+    replies, and a half-typed quote draft left in the WeChat input box if one of
+    them gets killed mid-typing. The watchdog only guards itself; this guards the
+    worker, so `python main.py` started by hand while the daemon is live bails out
+    with instructions instead of corrupting the chat.
+    """
+    try:
+        from ctypes import windll  # Windows only
+    except ImportError:
+        windll = None
+    if windll is not None:
+        handle = windll.kernel32.CreateMutexW(None, False, _SINGLE_NAME)
+        if windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return None
+        return ("win", handle)
+    path = os.path.join(ROOT, "logs", "collector.lock")
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        pid = 0
+        try:
+            pid = int(open(path, encoding="ascii").read().strip() or 0)
+            os.kill(pid, 0)
+        except Exception:
+            pid = 0  # stale lock from a dead process
+        if pid:
+            return None
+        try:
+            os.remove(path)
+        except OSError:
+            return None
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except OSError:
+            return None
+    os.write(fd, str(os.getpid()).encode("ascii"))
+    os.close(fd)
+    return ("file", path)
+
+
+def release_singleton_lock(lock) -> None:
+    if not lock:
+        return
+    kind, obj = lock
+    if kind == "win":
+        try:
+            from ctypes import windll
+            windll.kernel32.ReleaseMutex(obj)
+            windll.kernel32.CloseHandle(obj)
+        except Exception:
+            pass
+    else:
+        try:
+            os.remove(obj)
+        except OSError:
+            pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", action="store_true")
@@ -1034,10 +1098,18 @@ def main() -> None:
     if args.selftest:
         asyncio.run(selftest(cfg))
         return
-    col = Collector(cfg)
-    if not col.adb.devices():
-        raise SystemExit("no adb device (check cable / USB debugging)")
-    asyncio.run(col.run())
+    lock = acquire_singleton_lock()
+    if lock is None:
+        raise SystemExit(
+            "已有采集器在跑（多半是 collector-watchdog.ps1 拉起的）。要前台调试就先停守护："
+            "watchdog -> cmd 包装 -> python，或直接看 logs\\collector.log")
+    try:
+        col = Collector(cfg)
+        if not col.adb.devices():
+            raise SystemExit("no adb device (check cable / USB debugging)")
+        asyncio.run(col.run())
+    finally:
+        release_singleton_lock(lock)
 
 
 if __name__ == "__main__":
