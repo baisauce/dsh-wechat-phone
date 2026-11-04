@@ -359,6 +359,56 @@ class Collector:
         self._bottom_ts, self._bottom_ok = now, (before == after)
         return self._bottom_ok
 
+    def _settle_bottom_sync(self, max_pulls: int = 4) -> list:
+        """Drag the viewport down to the newest message; return fresh OCR lines.
+
+        `_ensure_bottom_sync` only PROVES where the window is parked; this one
+        moves it, so a page left standing in old history can never be read as
+        live traffic (2026-11-05: a scroll back to Tuesday made hours-old
+        messages look brand new). Bounded by max_pulls: a stuck screen must not
+        spin here forever.
+        """
+        def sig(ls: list) -> str:
+            return "|".join(sorted(l.text for l in ls if l.cy > self._h * 0.55)[:6])
+
+        lines = oc.ocr_png(self.adb.screencap())
+        for _ in range(max(1, max_pulls)):
+            before = sig(lines)
+            self.adb.swipe(self._w // 2, int(self._h * 0.80),
+                           self._w // 2, int(self._h * 0.30), 300)
+            time.sleep(0.8)
+            lines = oc.ocr_png(self.adb.screencap())
+            if sig(lines) == before:
+                break
+        self._bottom_ts, self._bottom_ok = time.time(), True
+        return lines
+
+    def _settle_screen_sync(self) -> list[dict]:
+        """Messages on the newest screen after settling down (the seam sims replace)."""
+        return oc.extract_chat_messages(self._settle_bottom_sync(), self._w, self._h)
+
+    def _locate_cursor(self, others: list[dict]) -> int:
+        """Index of the cursor bubble on this screen, or -1.
+
+        An empty cursor must never match: it would 'find' an emoji-only bubble
+        and treat everything from the top of the screen as new.
+        """
+        if not self._cursor:
+            return -1
+        for i in range(len(others) - 1, -1, -1):
+            if norm_text(others[i]["text"]) == self._cursor:
+                return i
+        return -1
+
+    def _age_ok(self, m: dict, limit_s: float) -> bool:
+        """False when WeChat's own stamp proves this bubble is older than the limit.
+
+        No stamp above the bubble means 'unknown' and stays allowed, so normal
+        live traffic is never blocked by this guard.
+        """
+        age = m.get("age_s")
+        return age is None or age <= limit_s
+
     async def _handle_screen(self, lines: list) -> bool:
         """Cursor-diff; forward wake-rule hits. Returns True if anything forwarded."""
         msgs = oc.extract_chat_messages(lines, self._w, self._h)
@@ -386,19 +436,31 @@ class Collector:
                 self._seen[msg_key(self.home, m)] = time.time()
             log.info("home %r baseline: %d visible, cursor=%r", self.home, len(msgs), self._cursor[:20])
             hits = [m for m in others if self._is_at(m["text"])
+                    and self._age_ok(m, float(self.cfg.get("backlog_max_age_s", 3 * 86400)))
                     and msg_key(self.home, m) not in getattr(self, "_history_answered", set())]
             if hits:
                 log.info("history has %d unanswered @-mention(s), queueing one-by-one", len(hits))
                 self._backlog.extend(hits)
                 return True
             return False
-        cur = self._cursor
-        idx = -1
-        if cur:  # empty cursor must NOT match norm-text-empty msgs (emoji-only bubbles)
-            for i in range(len(others) - 1, -1, -1):
-                if norm_text(others[i]["text"]) == cur:
-                    idx = i
-                    break
+        idx = self._locate_cursor(others)
+        if idx < 0:
+            # Not finding the anchor has two very different causes. Either the
+            # window is PARKED in old history (a human scrolled up, a quote scroll
+            # left it there) - then the page in front of us is NOT live traffic and
+            # answering it means replying to hours-old messages (2026-11-05) - or
+            # the chat simply moved past the cursor. Pull to the newest first and
+            # re-locate there; the settled screen becomes the base either way.
+            log.info("cursor lost: settling to the newest before reading")
+            msgs2 = await asyncio.to_thread(self._settle_screen_sync)
+            for m in msgs2:
+                if m["is_self"]:
+                    self._note_self(m["text"])
+            msgs, others = msgs2, [m for m in msgs2
+                                   if not m["is_self"] and not self._is_my_text(m["text"])]
+            idx = self._locate_cursor(others)
+            if idx < 0:
+                log.info("still no anchor after settling down")
         catch = int(self.cfg.get("catchup_pages", 3))
         if idx < 0 and catch > 0:
             # cursor scrolled off (fast chatter): catch up by scanning upward
@@ -413,16 +475,12 @@ class Collector:
                 others = hist_others
                 msgs = hist
                 # re-locate cursor inside the merged history
-                idx = -1
-                if cur:
-                    for i in range(len(others) - 1, -1, -1):
-                        if norm_text(others[i]["text"]) == cur:
-                            idx = i
-                            break
+                idx = self._locate_cursor(others)
         fresh = others[idx + 1:] if idx >= 0 else others
         forwarded = False
         hits = []
         now = time.time()
+        live_limit = float(self.cfg.get("live_max_age_s", 7200))
         for j, m in enumerate(fresh):
             prev = fresh[j - 1] if j else (others[idx] if idx >= 0 else None)
             k = msg_key(self.home, m, prev["text"] if prev else "")
@@ -430,6 +488,13 @@ class Collector:
             # Belt against the catch-up rewind storm: a fingerprint that was
             # ANSWERED never re-forwards, even via the position-first path.
             if fp in self._fp_answered:
+                continue
+            if not self._age_ok(m, live_limit):
+                # provably old bubble in a freshly-read window: that is backlog,
+                # not traffic - answer it only after a human actually asks for it
+                log.info("live path skips %ds-old message: %s",
+                         int(m.get("age_s") or 0), m["text"][:30])
+                self._seen[k] = time.time()
                 continue
             # Position is the primary dedup: everything AFTER the cursor is new,
             # even if identical text was seen before (same person re-sending).
@@ -539,6 +604,8 @@ class Collector:
                     continue
                 if not self._is_at(m["text"]):
                     continue
+                if not self._age_ok(m, float(self.cfg.get("live_max_age_s", 7200))):
+                    continue      # hours old: rescue is for recently-missed, not backlog
                 prev = hist[j - 1] if j else None
                 k = msg_key(self.home, m, prev["text"] if prev else "")
                 plain = msg_key(self.home, m)
@@ -586,6 +653,8 @@ class Collector:
                     continue
                 if not self._is_at(m["text"]):
                     continue          # sweep only rescues mentions, not keyword chatter
+                if not self._age_ok(m, float(self.cfg.get("live_max_age_s", 7200))):
+                    continue          # hours old: the sweep rescues recent misses only
                 prev = hist[j - 1] if j else None
                 k = msg_key(self.home, m, prev["text"] if prev else "")
                 fp = msg_fp(self.home, m)

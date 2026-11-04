@@ -62,6 +62,72 @@ _TIME_RE = re.compile(
 )
 _SENDER_PREFIX_RE = re.compile(r"^([^:：]{1,24})[:：](.+)$")
 
+# WeChat stamps a chat with relative day labels ("Tue 18:32", "Yesterday 23:51",
+# "昨天 09:12", "11月3日"). They are the ONLY age signal the OCR channel has, and
+# without them a window parked hours in the past looks exactly like a live one:
+# 2026-11-05 an accidental scroll back to Tuesday made the collector answer
+# six-hour-old messages as if they had just arrived. Parsing the stamps turns
+# "is this fresh?" into a fact the live path can check.
+_WEEK_EN = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_WEEK_CN = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+_TIME_LABEL_RES = (
+    (re.compile(r"^(\d{4})年(\d{1,2})月(\d{1,2})日(?:.*?(\d{1,2}):(\d{2}))?$"), "ymd"),
+    (re.compile(r"^(\d{1,2})月(\d{1,2})日(?:.*?(\d{1,2}):(\d{2}))?$"), "md"),
+    (re.compile(r"^(?:昨天|yesterday)\s*(\d{1,2}):(\d{2})$", re.I), "yesterday"),
+    (re.compile(r"^星期([一二三四五六日天])\s*(\d{1,2}):(\d{2})$"), "weekday"),
+    (re.compile(r"^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*(\d{1,2}):(\d{2})$", re.I),
+     "weekday_en"),
+    (re.compile(r"^(\d{1,2}):(\d{2})$"), "clock"),
+)
+
+
+def parse_time_label(text: str, now: float | None = None) -> float | None:
+    """Approximate unix ts of a chat time separator, or None if it is not one.
+
+    Deliberately forgiving: callers only ever ask "older than N hours?", so a
+    wrong guess of +/-1 week on an odd OCR string is harmless, and a missed label
+    just means 'age unknown' (the caller then treats the message as live).
+    """
+    t = (text or "").replace(" ", "").strip()
+    if not t:
+        return None
+    now = time.time() if now is None else now
+    base = time.localtime(now)
+    midnight = now - (base.tm_hour * 3600 + base.tm_min * 60 + base.tm_sec)
+    for rx, kind in _TIME_LABEL_RES:
+        m = rx.match(t)
+        if not m:
+            continue
+        g = m.groups()
+        try:
+            if kind == "ymd":
+                return time.mktime((int(g[0]), int(g[1]), int(g[2]),
+                                    int(g[3] or 0), int(g[4] or 0), 0, 0, 0, -1))
+            if kind == "md":
+                hh, mi = int(g[2] or 0), int(g[3] or 0)
+                ts = time.mktime((base.tm_year, int(g[0]), int(g[1]), hh, mi, 0, 0, 0, -1))
+                if ts > now + 86400:          # Jan 2 read on Dec 31: last year
+                    ts = time.mktime((base.tm_year - 1, int(g[0]), int(g[1]),
+                                      hh, mi, 0, 0, 0, -1))
+                return ts
+            if kind == "yesterday":
+                return midnight - 86400 + int(g[0]) * 3600 + int(g[1]) * 60
+            if kind in ("weekday", "weekday_en"):
+                wd = _WEEK_CN.get(g[0], _WEEK_EN.get(g[0].lower()))
+                if wd is None:
+                    continue
+                hh, mi = int(g[1]), int(g[2])
+                return midnight - ((base.tm_wday - wd) % 7) * 86400 + hh * 3600 + mi * 60
+            if kind == "clock":
+                hh, mi = int(g[0]), int(g[1])
+                ts = midnight + hh * 3600 + mi * 60
+                if ts > now + 1800:            # a future clock time = yesterday's
+                    ts -= 86400
+                return ts
+        except (ValueError, OverflowError):
+            continue
+    return None
+
 
 def is_home(lines: list[Line], w: int, h: int) -> bool:
     labels = {l.text for l in lines if l.cy > h * 0.93}
@@ -101,12 +167,21 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
     body = sorted((l for l in lines if 200 < l.cy < body_bottom), key=lambda l: l.cy)
     raw: list[dict] = []
     pending_sender: str | None = None
+    last_ts: float | None = None      # time separator directly above the next bubble
+    now_ts = time.time()
+
+    def age_of() -> float | None:
+        """Seconds from this bubble's stamp to now; None when no stamp was seen."""
+        return None if last_ts is None else max(0.0, now_ts - last_ts)
+
     i, n = 0, len(body)
     while i < n:
         l = body[i]
         s = l.text.strip()
         i += 1
-        if _TIME_RE.match(s):
+        stamp = parse_time_label(s, now_ts)
+        if stamp is not None:
+            last_ts = stamp
             continue
         if (abs(l.cx / w - 0.5) < 0.10 and l.left > w * 0.30
                 and l.right < w * 0.72 and len(s) <= 30):
@@ -127,7 +202,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         m = _SENDER_PREFIX_RE.match(s)
         if m and l.left < w * 0.30 and len(m.group(1)) <= 24:
             raw.append({"text": m.group(2).strip(), "sender": m.group(1).strip(),
-                        "is_self": False, "y": l.cy})
+                        "is_self": False, "y": l.cy, "age_s": age_of()})
             pending_sender = None
             continue
         if pending_sender is not None:
@@ -140,7 +215,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
             is_self = l.left > w * 0.24          # fresh bubble: left-margin decides side
             sender = ""
         raw.append({"text": s, "sender": None if is_self else sender,
-                    "is_self": is_self, "y": l.cy})
+                    "is_self": is_self, "y": l.cy, "age_s": age_of()})
         pending_sender = None
     # merge multi-line bubbles into single messages
     merged: list[dict] = []

@@ -24,6 +24,8 @@
   "history_pages": 3,
   "catchup_pages": 2,
   "quote_gap": 1,
+  "live_max_age_s": 7200,
+  "backlog_max_age_s": 259200,
   "list_poll_s": 2.0,
   "sweep_pages": 2,
   "gate": {
