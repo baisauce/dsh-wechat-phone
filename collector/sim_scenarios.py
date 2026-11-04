@@ -21,6 +21,7 @@ sys.path.insert(0, HERE)
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import main as M  # noqa: E402
+import ocr_channel as oc  # noqa: E402
 from ocr_channel import Line  # noqa: E402
 
 # Config source: $SIM_CONFIG > config.json (runtime, real names) > config.example.json.
@@ -101,7 +102,18 @@ def new_col():
     col._recovery_done = True
     col._state_file = os.path.join(os.environ.get("TEMP", HERE), "sim_state.json")
     col._w, col._h = 1080, 2412
+    # 'settling the viewport' on a scripted screen means: same page, same truth.
+    col._last_lines = []
+    col._settle_screen_sync = lambda: oc.extract_chat_messages(
+        col._last_lines, col._w, col._h)
     return col
+
+
+async def feed(col, msgs):
+    """Hand a scripted screen to the live path and remember it for the settle seam."""
+    lines = screen(msgs)
+    col._last_lines = lines
+    return await col._handle_screen(lines)
 
 
 PASS = FAIL = 0
@@ -118,9 +130,9 @@ def check(name, cond, detail=""):
 async def main():
     print("T1: 启动基线——历史吸收，屏上未答@进 backlog，游标剥标点")
     col = new_col()
-    await col._handle_screen(screen([mk_msg("随便抱，随便摸", "群友C"),
-                                     mk_msg("不伸爪子", "群友C"),
-                                     mk_msg("@鲸鲸 旧消息", "群友A")]))
+    await feed(col, [mk_msg("随便抱，随便摸", "群友C"),
+                     mk_msg("不伸爪子", "群友C"),
+                     mk_msg("@鲸鲸 旧消息", "群友A")])
     check("未答@进 backlog 队列(由 worker 逐条发)",
           len(col._ws.sent) == 0 and len(col._backlog) == 1
           and col._backlog[0]["text"] == "@鲸鲸 旧消息",
@@ -133,7 +145,7 @@ async def main():
     base = [mk_msg("@鲸鲸我好累", "群友D"), mk_msg("今晚打不打工", "群友E"),
             mk_msg("@鲸鲸出来出来", "群友A"), mk_msg("deepseek又降价了", "群友F"),
             mk_msg("刚才那个表情包啥意思", "群友E"), mk_msg("@大鲸 给大伙讲个笑话", "家人C")]
-    await col._handle_screen(screen(base))
+    await feed(col, base)
     sent = col._ws.sent
     texts = [s["text"] for s in sent]
     check("唤醒 4 条命中且 at 标志正确(触发词命中入站)",
@@ -145,9 +157,9 @@ async def main():
           col._quote_texts == ["@鲸鲸我好累", "@鲸鲸出来出来", "@大鲸 给大伙讲个笑话"],
           str(col._quote_texts))
     col._ws.sent.clear()
-    await col._handle_screen(screen(base + [mk_msg("＠鲸鲸 在吗", "新人"),
-                                            mk_msg("DeepSeek 真强", "路人"),
-                                            mk_msg("通宵聊天呢", "群友E")]))
+    await feed(col, base + [mk_msg("＠鲸鲸 在吗", "新人"),
+                            mk_msg("DeepSeek 真强", "路人"),
+                            mk_msg("通宵聊天呢", "群友E")])
     sent = col._ws.sent
     check("全角＠与大小写触发词都唤醒",
           len(sent) == 2 and sent[0]["at"] is True

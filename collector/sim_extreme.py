@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""sim_extreme.py — 时序/去重压力习题（12 场景 / 21 项检查）。
+"""sim_extreme.py — 时序/去重压力习题（13 场景 / 27 项检查）。
 
 历史标签对照：E1=S8+S10+S23前态, E2=S9, E3=S13, E4=S16, E5=S17,
 E6=S12+S18(引用家族), E7=S20(竞态), E8=S21(自聊回声), E9=S22(单行化),
-E10=S23(pending补救), E11=引用间隔(隔一条即引用), E12=贴底最新气泡可读。
+E10=S23(pending补救), E11=引用间隔(隔一条即引用), E12=贴底最新气泡可读,
+E13=时间戳认龄+停在旧页不收割(2026-11-05 事故回归)。
 全部 adb+ws 模拟，无网络无真机。
 语料为脱敏示例名：本机跑请用 SIM_CONFIG 指向 config.example.json（见 sim_all.py）。
 """
@@ -96,9 +97,14 @@ class SimCollector(M.Collector):
     def _screen_msgs_sync(self):
         return [dict(m) for m in self.pages[self.page]]
 
+    def _settle_screen_sync(self):
+        """Settling the viewport always lands on the newest scripted page (index 0)."""
+        self.page = 0
+        return [dict(m) for m in self.pages[0]]
 
-def mk(text, sender="某人", is_self=False):
-    return {"text": text, "sender": sender, "is_self": is_self, "y": 0}
+
+def mk(text, sender="某人", is_self=False, age=None):
+    return {"text": text, "sender": sender, "is_self": is_self, "y": 0, "age_s": age}
 
 
 async def run_backlog_until(col, n_expected, timeout=12.0):
@@ -298,6 +304,36 @@ async def main():
           any("求求你别犯傻了" in m["text"] for m in got)
           and any((m.get("sender") or "") == "家人A" for m in got), str(got))
     check("输入框那行(0.97h)不会被当成消息", all(m["text"] != "の" for m in got), str(got))
+
+    print("E13: 时间戳认龄 + 停在几小时前的窗口绝不收割（2026-11-05 事故回归）")
+    from ocr_channel import parse_time_label as PTL
+    nowt = time.time()
+    check("Yesterday/昨天/星期/裸时钟/月日都能认，正文不误判",
+          PTL("Yesterday 23:51", nowt) is not None and PTL("昨天 09:12", nowt) is not None
+          and PTL("Tue 18:32", nowt) is not None and PTL("23:41", nowt) is not None
+          and PTL("11月3日", nowt) is not None
+          and PTL("今晚吃火锅", nowt) is None and PTL("鲸鲸得过段时间再上线", nowt) is None)
+    check("星期标签永远落在最近的那个过去时刻",
+          PTL("Sun 12:00", nowt) is not None and PTL("Sun 12:00", nowt) <= nowt, "")
+    aged = OC.extract_chat_messages(
+        [OC.Line(540.0, 300.0, "Tue 18:32", 0.99, 434.0, 650.0, 280.0, 320.0),
+         OC.Line(420.0, 660.0, "@鲸鲸 晚上吃什么", 0.99, 250.0, 630.0, 630.0, 690.0)],
+        1080, 2412)
+    check("气泡按上方时间戳拿到 age_s（且不会当成消息）",
+          len(aged) == 1 and aged[0].get("age_s") is not None
+          and aged[0]["age_s"] < 8 * 86400, str(aged))
+    bottom = [mk("刚才那条我答过了", "丙"), mk("在呢", None, True)]
+    parked = [mk("@鲸鲸 晚上吃什么", "甲", age=6 * 3600 + 60), mk("没开 dsh 么", "乙")]
+    colz = SimCollector([bottom, parked])
+    colz.page = 1                                  # viewport parked hours in the past
+    colz._cursor = M.norm_text("刚才那条我答过了")
+    await colz._handle_screen([])
+    check("停在旧页时一条都不收割", colz._ws.sent == [], str(colz._ws.sent))
+    check("先贴回最新再继续", colz.page == 0, f"page={colz.page}")
+    colz2 = SimCollector([[mk("@鲸鲸 六小时前的@", "甲", age=6 * 3600 + 60)]])
+    colz2._cursor = "不在屏上的锚"
+    await colz2._handle_screen([])
+    check("超龄消息即使被读到也不转（live_max_age_s）", colz2._ws.sent == [], str(colz2._ws.sent))
 
     print(f"\n===== 极端场景结果: {PASS} passed, {FAIL} failed =====")
     return 1 if FAIL else 0

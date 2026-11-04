@@ -5,8 +5,8 @@
   $env:SIM_CONFIG = config.example.json 的绝对路径
   python sim_all.py
 覆盖：T1-T3 唤醒/游标/引用定位（sim_scenarios，8 项）
-     + E1-E12 时序压力：历史追答/重启去重/pending补救/竞态/回声/单行化/引用间隔/贴底可读（sim_extreme，21 项）。
-     合计 29 项。全绿 = exit 0。改测试只为省时：断言合并、S8 类"等满超时"改提前返回。
+     + E1-E13 时序压力：历史追答/重启去重/pending补救/竞态/回声/单行化/引用间隔/贴底可读/时间戳认龄与停在旧页不收割（sim_extreme，27 项）。
+     合计 35 项。全绿 = exit 0。改测试只为省时：断言合并、S8 类"等满超时"改提前返回。
 """
 import asyncio
 import os
@@ -19,7 +19,7 @@ import sim_scenarios as A  # noqa: E402
 import sim_extreme as B    # noqa: E402
 
 rc = 0
-for name, mod in (("scenarios T1-T3", A), ("extreme E1-E12", B)):
+for name, mod in (("scenarios T1-T3", A), ("extreme E1-E13", B)):
     print(f"\n########## {name} ##########")
     try:
         r = asyncio.run(mod.main())
