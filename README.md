@@ -290,6 +290,18 @@ Set-Content -Path "<AstrBot目录>\logs\.bridge_token" -Value "<你在 AstrBot �
 
 **要它 7×24 常驻**：`<py> main.py` 关窗即死。仓库里带了守护脚本 `collector-watchdog.ps1` + `start-collector-bg.bat`（命名互斥防双开；正常崩溃 15 秒后重启，若连续 3 次"秒退"（典型场景：手机没插线）自动退避成 60 秒一轮，免得刷屏）。它们**不写死任何机器路径**：启动时先跑 `tools/resolve-env.ps1`，按「环境变量 `DSH_WX_PYTHON` / `DSH_WX_ADB` → `collector\config.json` 的 `python` / `adb_path` → AstrBot 旁边的嵌入式 `python\python.exe` → PATH」的顺序找解释器和 adb；找不到会报 `python not resolved` 并退出（`run-once.cmd` 退出码 3、watchdog 4）。手机侧还要：充电时不休屏（开发者选项）、屏幕不锁。
 
+**要它开机自启（而且开机静默）**：双击 bat 只是「现在启动」，重启就没了。仓库带了 `tools/install-autostart.ps1`，一次装好登录自启：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-autostart.ps1
+# 顺带把 AstrBot 自己的启动项也换成无窗口的（可选）：
+#   ... -IncludeAstrBot -AstrBotRoot "<AstrBot目录>"
+# 想撤掉：
+#   ... -Uninstall
+```
+
+> ⚠️ **别把 `.bat` 直接丢进「启动」文件夹**——这是本项目最容易踩的一脚坑。快捷方式指向 bat 会给它开一个**可见的 cmd 黑窗**；而 `start-collector-bg.bat` 是**同步**等 `collector-watchdog.ps1` 的，watchdog 又是个死循环，于是这个空窗会一直挂在桌面上。更要命的是：**关掉它＝连采集器一起杀掉**（watchdog → run-once → python 整棵树），表现出来就是"重启完不知道为什么就不干活了"。所以启动项必须走 `wscript.exe tools\launch-hidden.vbs <批处理>`：`wscript` 本身没有控制台，窗口样式传 0，从进程创建那一刻就不存在窗口，也就没有可以误关的东西。上面这个脚本就是干这件事的，而且**可以重复运行**（发现旧的不对会就地修好）。
+
 ## 第 10 步（可选）：flight simulator——不碰手机的排练场
 
 想改人格/换模型/调延迟，不必每条都上真群试。`<py> replay_mentions.py` 会造几个**假群**往插座里灌假消息，收集回复存成 JSON——采集器有个规矩：只把回复打进它的 `home_chat` 那个会话，所以假群的回复永远不会误发到真实群。**先排练，再上台。**
@@ -387,6 +399,7 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 | PC | `collector/sim_all.py`（当前套件）`collector/sim_scenarios.py` `collector/sim_extreme.py` | 离线演习题（不联网不接手机也能验证逻辑） |
 | PC | `start-collector.bat` `start-collector-bg.bat` `collector-watchdog.ps1` | 常驻与守护（**路径无关**，机器相关路径统一由 `tools/resolve-env.ps1` 解析） |
 | PC | `tools/resolve-env.ps1` | 唯一的"找 python / 找 adb"入口：环境变量 → `config.json` → 常见布局 → PATH |
+| PC | `tools/launch-hidden.vbs` `tools/install-autostart.ps1` | 开机自启：无控制台启动器（`wscript` 转手、窗口样式 0，没有可误关的窗口）+ 把「启动」里的快捷方式装成/修成隐藏形式（幂等，支持 `-Uninstall`） |
 | PC | `logs/collector.log` `collector/state.json` | 运行日志 / 游标与去重表（含真实聊天，**永不提交**） |
 | AstrBot | `adapter/data-plugins/astrbot_wechat_phone_bridge` | 🔌 翻译插座（WS 服务端 + 事件注册） |
 
@@ -415,6 +428,7 @@ DSH 生态里存在一批 dsh-wechat-bridge（上游 Yuuyuko-uu，MIT；如 [tha
 | 群里 @ 了它不醒（插件侧） | 唤醒判定要消息里带 @ 组件 | 把 @机器人 构造成消息的**第一个组件**（配合 `enable_at`，本项目已实现） |
 | 回复又慢又"冷场感" | 表达教练把群客一律按冷客延迟 | cold 档 10/25→3/8、总封顶 90→32s（字段名见第 10 步） |
 | 一键启动脚本说 `python not resolved` / 秒退 | 自动解析器没找到解释器 | 设环境变量 `DSH_WX_PYTHON`（和 `DSH_WX_ADB`），或把 `config.json` 的 `python` / `adb_path` 填成绝对路径；脚本本身已不写死路径 |
+| 开机总弹出**空白命令行黑窗**，标题像本项目的批处理路径；关掉它采集器就再也不动了 | 「启动」文件夹里把快捷方式**直接指向了 `.bat`**：快捷方式会为它开一个可见的 cmd 窗，而批处理是同步等待死循环的 watchdog 的，于是窗口一直挂着；**关窗＝杀掉 watchdog → run-once → python 整棵树** | 用 `tools\install-autostart.ps1` 把启动项改成 `wscript.exe …\tools\launch-hidden.vbs <批处理>`（无控制台）。自查：关掉那个黑窗后 `logs\collector.log` 是不是就停止增长了 |
 | 手敲 `python main.py` 报"已有采集器在跑" | 采集器自带单实例锁（守护只管守护自己的互斥体，两个采集器会抢同一块屏幕：重复回复、还可能把半截引文草稿留在输入框里） | 别双开：要么直接看 `logs\collector.log`，要么按 **watchdog → cmd 包装 → python** 停掉守护再前台调试。`--selftest` 不受此锁限制，可与守护并行 |
 | `git clone` / 插件市场 / pip 卡死 | GitHub 与 PyPI 在部分网络直连不稳 | clone 加镜像前缀或下 zip；`astrbot plug install ... --proxy`；pip 换国内镜像 |
 | 装完 ADBKeyboard 打字仍是英文/乱码 | 输入法没在系统里启用 | 手机设置里手动启用 ADBKeyboard（首次无法自动化），再重启采集器让它 `ime set` |
