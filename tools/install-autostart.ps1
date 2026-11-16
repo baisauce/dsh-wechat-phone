@@ -1,12 +1,11 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Make the WeChat collector start at logon with NO visible console window.
 
 .DESCRIPTION
-    Registers a Startup-folder shortcut for start-collector-bg.bat that goes
-    through wscript.exe + tools\launch-hidden.vbs instead of pointing at the
-    .bat directly.
+    Registers Startup-folder shortcuts that go through wscript.exe plus
+    tools\launch-hidden.vbs instead of pointing at a .bat directly.
 
     Why that matters: a shortcut that points at a .bat opens a visible cmd.exe
     window, and because the batch waits synchronously on collector-watchdog.ps1
@@ -14,11 +13,17 @@
     it kills watchdog -> run-once -> python, i.e. the collector silently dies
     and stays dead until the next logon.
 
-    Idempotent: re-running repairs an existing bad shortcut in place. It never
-    touches the collector's config, the running watchdog, or the repository.
+    The shortcuts are named so that Task Manager / Settings > Startup are
+    self-explanatory:
+        微信采集器（AI 收发消息）.lnk     -> the bot that reads the phone
+        AstrBot 服务端（网页控制台）.lnk  -> the AstrBot server itself
+
+    Idempotent: re-running repairs an existing bad shortcut in place and
+    migrates the old, unclear names. It never touches the collector's config,
+    the running watchdog, or the repository.
 
 .PARAMETER Uninstall
-    Remove the startup shortcut instead of creating it.
+    Remove the startup shortcuts instead of creating them.
 
 .PARAMETER IncludeAstrBot
     Also create/repair a hidden startup shortcut for AstrBot itself. Requires
@@ -53,8 +58,17 @@ $vbs     = Join-Path $PSScriptRoot 'launch-hidden.vbs'
 $bat     = Join-Path $root 'start-collector-bg.bat'
 $startup = [Environment]::GetFolderPath('Startup')
 $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
-$lnkName = 'AstrBot WeChat Collector.lnk'
-$lnkPath = Join-Path $startup $lnkName
+
+# Friendly names: these are what the user sees in Task Manager / Settings.
+$CollectorLnkName = '微信采集器（AI 收发消息）.lnk'
+$AstrBotLnkName   = 'AstrBot 服务端（网页控制台）.lnk'
+
+# Old, unclear names created by earlier versions of this script.
+$LegacyCollectorLnkName = 'AstrBot WeChat Collector.lnk'
+$LegacyAstrBotLnkName   = 'AstrBot.lnk'
+
+$CollectorLnk = Join-Path $startup $CollectorLnkName
+$AstrBotLnk   = Join-Path $startup $AstrBotLnkName
 
 function Say-Ok   ([string]$m) { Write-Host "[  OK  ] $m" -ForegroundColor Green }
 function Say-Info ([string]$m) { Write-Host "[ INFO ] $m" }
@@ -105,29 +119,44 @@ function Test-HiddenShortcut {
 function Show-Shortcut {
     param([string]$LnkPath)
     $s = $shell.CreateShortcut($LnkPath)
-    Say-Info  "  file      : $LnkPath"
-    Say-Info  "  target    : $($s.TargetPath)"
-    Say-Info  "  arguments : $($s.Arguments)"
-    Say-Info  "  workdir   : $($s.WorkingDirectory)"
+    Say-Info "  name      : $(Split-Path -Leaf $LnkPath)"
+    Say-Info "  target    : $($s.TargetPath)"
+    Say-Info "  arguments : $($s.Arguments)"
+    Say-Info "  workdir   : $($s.WorkingDirectory)"
+}
+
+# Returns the batch a legacy shortcut launches, but only if that shortcut was
+# created by this tool (wscript + our vbs). Anything else returns $null, so we
+# never delete a startup entry that belongs to somebody else.
+function Get-OwnedShortcutTarget {
+    param([string]$LnkPath)
+    if (-not (Test-Path $LnkPath)) { return $null }
+    $s = $shell.CreateShortcut($LnkPath)
+    if ($s.TargetPath -ne $wscript) { return $null }
+    if ($s.Arguments -notlike "*$vbs*") { return $null }
+    $m = [regex]::Matches($s.Arguments, '"([^"]+)"')
+    if ($m.Count -ge 2) { return $m[1].Groups[1].Value }
+    return $null
 }
 
 # ------------------------------------------------------------- uninstall ----
 if ($Uninstall) {
     Say-Info 'Removing startup entries ...'
 
-    foreach ($pair in @(
-            @{ Lnk = $lnkPath; Label = 'collector' },
-            @{ Lnk = (Join-Path $startup 'AstrBot.lnk'); Label = 'AstrBot' })) {
-        if (Test-Path $pair.Lnk) {
-            Say-Info "  looked at $($pair.Label): $($pair.Lnk)"
-            # Only remove entries this tool owns (wscript + our vbs).
-            $s = $shell.CreateShortcut($pair.Lnk)
-            if ($s.TargetPath -eq $wscript -and $s.Arguments -like "*$vbs*") {
-                Remove-Item -LiteralPath $pair.Lnk -Force
-                Say-Ok "  removed $($pair.Label) startup shortcut"
-            } else {
-                Say-Warn "  kept $($pair.Label) (not created by this tool)"
-            }
+    $candidates = @(
+        @{ Lnk = $CollectorLnk; Label = 'collector' },
+        @{ Lnk = $AstrBotLnk;   Label = 'AstrBot' },
+        @{ Lnk = (Join-Path $startup $LegacyCollectorLnkName); Label = 'collector (legacy name)' },
+        @{ Lnk = (Join-Path $startup $LegacyAstrBotLnkName);   Label = 'AstrBot (legacy name)' }
+    )
+
+    foreach ($c in $candidates) {
+        if (-not (Test-Path $c.Lnk)) { continue }
+        if ($null -ne (Get-OwnedShortcutTarget $c.Lnk)) {
+            Remove-Item -LiteralPath $c.Lnk -Force
+            Say-Ok "  removed $($c.Label): $(Split-Path -Leaf $c.Lnk)"
+        } else {
+            Say-Warn "  kept $($c.Label) (not created by this tool): $(Split-Path -Leaf $c.Lnk)"
         }
     }
 
@@ -153,30 +182,53 @@ foreach ($need in @(
     }
 }
 if ($problems -gt 0) {
-    Say-Fail "Fix the missing file(s) above, then run this script again."
+    Say-Fail 'Fix the missing file(s) above, then run this script again.'
     exit 1
 }
 
 Write-Host ''
-if (Test-Path $lnkPath) {
-    $state = Test-HiddenShortcut -LnkPath $lnkPath -Target $bat
-    if ($state -eq 'ok') {
-        Say-Ok 'Collector startup shortcut already correct - refreshing it anyway'
-    } else {
-        Say-Warn "Existing collector shortcut is NOT the hidden kind ($state)"
-        Say-Warn '  -> this is the "blank console window at boot" bug; repairing now'
-    }
-} else {
-    Say-Info 'No collector startup shortcut yet - creating one'
+
+# --- migrate the old unclear name (collector) -------------------------------
+$legacyCollector = Join-Path $startup $LegacyCollectorLnkName
+if ($null -ne (Get-OwnedShortcutTarget $legacyCollector)) {
+    Say-Info "Migrating old startup entry: $LegacyCollectorLnkName"
+    Remove-Item -LiteralPath $legacyCollector -Force
+    Say-Ok  "  removed obsolete name $LegacyCollectorLnkName"
 }
 
-Set-HiddenShortcut -LnkPath $lnkPath -Target $bat -WorkingDir $root `
-    -Description 'AstrBot WeChat collector watchdog (hidden, no console)'
+# --- migrate the old unclear name (AstrBot), preserving its target ----------
+$legacyAstrBot = Join-Path $startup $LegacyAstrBotLnkName
+$legacyAstrBotTarget = Get-OwnedShortcutTarget $legacyAstrBot
+if ($null -ne $legacyAstrBotTarget) {
+    Say-Info "Migrating old startup entry: $LegacyAstrBotLnkName"
+    Set-HiddenShortcut -LnkPath $AstrBotLnk -Target $legacyAstrBotTarget `
+        -WorkingDir (Split-Path -Parent $legacyAstrBotTarget) `
+        -Description 'AstrBot 服务端：隐藏窗口，登录后自动启动'
+    Remove-Item -LiteralPath $legacyAstrBot -Force
+    Say-Ok "  renamed to $AstrBotLnkName"
+}
 
-$state = Test-HiddenShortcut -LnkPath $lnkPath -Target $bat
+# --- collector --------------------------------------------------------------
+if (Test-Path $CollectorLnk) {
+    $state = Test-HiddenShortcut -LnkPath $CollectorLnk -Target $bat
+    if ($state -eq 'ok') {
+        Say-Ok "Collector startup entry already correct: $CollectorLnkName"
+    } else {
+        Say-Warn "Existing collector entry is NOT the hidden kind ($state)"
+        Say-Warn '  -> this is the "blank console window at boot" bug; repairing now'
+        Set-HiddenShortcut -LnkPath $CollectorLnk -Target $bat -WorkingDir $root `
+            -Description '微信采集器：隐藏窗口，登录后自动启动'
+    }
+} else {
+    Say-Info 'No collector startup entry yet - creating one'
+    Set-HiddenShortcut -LnkPath $CollectorLnk -Target $bat -WorkingDir $root `
+        -Description '微信采集器：隐藏窗口，登录后自动启动'
+}
+
+$state = Test-HiddenShortcut -LnkPath $CollectorLnk -Target $bat
 if ($state -eq 'ok') {
-    Say-Ok "Collector autostart installed: $lnkName"
-    Show-Shortcut $lnkPath
+    Say-Ok "Collector autostart ready: $CollectorLnkName"
+    Show-Shortcut $CollectorLnk
 } else {
     Say-Fail "Collector autostart verification failed: $state"
     exit 1
@@ -194,13 +246,12 @@ if ($IncludeAstrBot) {
         Say-Fail "start-astrbot.bat not found under: $AstrBotRoot"
         exit 1
     }
-    $abLnk = Join-Path $startup 'AstrBot.lnk'
-    Set-HiddenShortcut -LnkPath $abLnk -Target $abBat -WorkingDir $AstrBotRoot `
-        -Description 'AstrBot standalone (auto-start at logon, hidden, no console)'
-    $state = Test-HiddenShortcut -LnkPath $abLnk -Target $abBat
+    Set-HiddenShortcut -LnkPath $AstrBotLnk -Target $abBat -WorkingDir $AstrBotRoot `
+        -Description 'AstrBot 服务端：隐藏窗口，登录后自动启动'
+    $state = Test-HiddenShortcut -LnkPath $AstrBotLnk -Target $abBat
     if ($state -eq 'ok') {
-        Say-Ok 'AstrBot autostart installed: AstrBot.lnk'
-        Show-Shortcut $abLnk
+        Say-Ok "AstrBot autostart ready: $AstrBotLnkName"
+        Show-Shortcut $AstrBotLnk
     } else {
         Say-Fail "AstrBot autostart verification failed: $state"
         exit 1
@@ -208,8 +259,9 @@ if ($IncludeAstrBot) {
 }
 
 Write-Host ''
-Say-Ok 'All startup entries are hidden. Next logon will be silent.'
+Say-Ok 'All startup entries are hidden and clearly named.'
 Say-Info 'They take effect at the next logon (or run the batch now to start the watchdog).'
-Say-Info 'Verify later:  Get-Process cmd,wscript | Select Id,MainWindowTitle   (titles stay empty)'
+Say-Info 'Note: these entries target wscript.exe on purpose - that is what keeps the'
+Say-Info '      console window away. The friendly name is the shortcut file name.'
 Say-Info 'Remove them:   tools\install-autostart.ps1 -Uninstall'
 exit 0

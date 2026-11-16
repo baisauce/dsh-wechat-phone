@@ -300,7 +300,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\install-autostart.ps1
 #   ... -Uninstall
 ```
 
-> ⚠️ **别把 `.bat` 直接丢进「启动」文件夹**——这是本项目最容易踩的一脚坑。快捷方式指向 bat 会给它开一个**可见的 cmd 黑窗**；而 `start-collector-bg.bat` 是**同步**等 `collector-watchdog.ps1` 的，watchdog 又是个死循环，于是这个空窗会一直挂在桌面上。更要命的是：**关掉它＝连采集器一起杀掉**（watchdog → run-once → python 整棵树），表现出来就是"重启完不知道为什么就不干活了"。所以启动项必须走 `wscript.exe tools\launch-hidden.vbs <批处理>`：`wscript` 本身没有控制台，窗口样式传 0，从进程创建那一刻就不存在窗口，也就没有可以误关的东西。上面这个脚本就是干这件事的，而且**可以重复运行**（发现旧的不对会就地修好）。
+> ⚠️ **别把 `.bat` 直接丢进「启动」文件夹**——这是本项目最容易踩的一脚坑。快捷方式指向 bat 会给它开一个**可见的 cmd 黑窗**；而 `start-collector-bg.bat` 是**同步**等 `collector-watchdog.ps1` 的，watchdog 又是个死循环，于是这个空窗会一直挂在桌面上。更要命的是：**关掉它＝连采集器一起杀掉**（watchdog → run-once → python 整棵树），表现出来就是"重启完不知道为什么就不干活了"。所以启动项必须走 `wscript.exe tools\launch-hidden.vbs <批处理>`：`wscript` 本身没有控制台，窗口样式传 0，从进程创建那一刻就不存在窗口，也就没有可以误关的东西。上面这个脚本就是干这件事的，而且**可以重复运行**（发现旧的不对会就地修好，早先那两个含糊的名字 `AstrBot.lnk` / `AstrBot WeChat Collector.lnk` 也会自动迁移过来）。
+
+装好后「启动」里就两条，名字直接写着用途：
+
+| 启动项 | 管什么 |
+|---|---|
+| `微信采集器（AI 收发消息）` | 采集器守护：读手机屏幕、往群里打字 |
+| `AstrBot 服务端（网页控制台）` | AstrBot 本体：6185 网页控制台 + 6199 翻译插座 |
+
+> 看到它们的**目标都是 `wscript.exe`** 不用紧张——这不是被劫持，而是故意的：正是靠 `wscript`（本身没有控制台）才不弹黑窗。**名字（快捷方式文件名）才是给人看的那部分**，想改就直接在「启动」文件夹里重命名，不影响功能。
 
 ## 第 10 步（可选）：flight simulator——不碰手机的排练场
 
