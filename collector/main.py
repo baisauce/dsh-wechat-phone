@@ -129,6 +129,7 @@ class Collector:
         self._batch_seq = 0
         self._self_full: list[str] = []      # untruncated norms of my own bubbles
         self._self_fps: set[str] = set()     # fingerprints of self-side bubbles seen
+        self._last_member_sender: str | None = None  # sticky group name for OCR parsing
         self._recovery_done = False
         self._state_file = os.path.join(HERE, "state.json")
         self._load_state()
@@ -280,6 +281,24 @@ class Collector:
             self._seen = dict(newest)
 
     # ---- screen capture seam + upward collection ---------------------------
+    def _parse_messages_sync(self, lines: list) -> list[dict]:
+        """Parse bubbles, carrying the last real member name across screens.
+
+        WeChat paints a sender label only above the FIRST bubble of a consecutive
+        run. When that label was scrolled off the top, or OCR missed it, the bubble
+        used to be filed under the generic "群友" name — which is what made AstrBot's
+        memory record real members (including the persona's "father") as an anonymous
+        group member. Hand the last name actually read to the parser as the fallback.
+        """
+        msgs = oc.extract_chat_messages(lines, self._w, self._h,
+                                        bot_names=self.nicknames,
+                                        last_sender=self._last_member_sender)
+        for m in msgs:
+            sender = m.get("sender")
+            if not m["is_self"] and sender and sender not in self.nicknames:
+                self._last_member_sender = sender
+        return msgs
+
     def _screen_msgs_sync(self) -> list[dict]:
         """One screen of messages; taps the unread pill first when the view is not at bottom."""
         lines = oc.ocr_png(self.adb.screencap())
@@ -291,7 +310,7 @@ class Collector:
             self.adb.tap(int(pill[0].cx), int(pill[0].cy))
             time.sleep(1.0)
             lines = oc.ocr_png(self.adb.screencap())
-        return oc.extract_chat_messages(lines, self._w, self._h, bot_names=self.nicknames)
+        return self._parse_messages_sync(lines)
 
     def _collect_upward_sync(self, max_pages: int) -> list[dict]:
         """Scroll up collecting pages, then return to the bottom.
@@ -385,7 +404,7 @@ class Collector:
 
     def _settle_screen_sync(self) -> list[dict]:
         """Messages on the newest screen after settling down (the seam sims replace)."""
-        return oc.extract_chat_messages(self._settle_bottom_sync(), self._w, self._h)
+        return self._parse_messages_sync(self._settle_bottom_sync())
 
     def _locate_cursor(self, others: list[dict]) -> int:
         """Index of the cursor bubble on this screen, or -1.
@@ -411,7 +430,7 @@ class Collector:
 
     async def _handle_screen(self, lines: list) -> bool:
         """Cursor-diff; forward wake-rule hits. Returns True if anything forwarded."""
-        msgs = oc.extract_chat_messages(lines, self._w, self._h)
+        msgs = self._parse_messages_sync(lines)
         for m in msgs:
             if m["is_self"]:
                 self._note_self(m["text"])
@@ -1016,29 +1035,82 @@ class Collector:
             if voice_row() is None:
                 return
 
-    def _clear_input_sync(self) -> None:
-        """Drop a stale draft or quote card left behind by a failed send.
+    def _input_focused(self) -> bool:
+        """True when WeChat's edit field currently has the IME served."""
+        try:
+            dump = self.adb.shell("dumpsys input_method")
+        except AdbError:
+            return False
+        return ("mInputShown=true" in dump
+                and "mServedView=com.tencent.mm.ui.widget.MMEditText" in dump)
 
-        WeChat keeps whatever is in the input box, and the next reply is APPENDED
-        to it, so one undelivered answer went out glued onto the next one
-        (observed 2026-11-25: two answers arrived as a single bubble). Clear
-        before typing instead of trusting the box to be empty.
+    def _clear_input_sync(self) -> bool:
+        """Empty the input box before typing. Returns True when the box is clean.
+
+        WeChat keeps whatever is in the input box and the next reply is APPENDED to
+        it, so one undelivered answer went out glued onto the next one (two replies
+        answering two different members arrived as a single bubble, 2026-11-25).
+
+        How to clear was measured on this phone (HONOR MagicOS, WeChat 8.0.80):
+          - ADBKeyboard's ADB_CLEAR_TEXT broadcast is accepted but IGNORED;
+          - long-pressing the field shows no 全选 popup (it only moves the caret);
+          - `input keycombination 113 29` (Ctrl+A) is not handled by the field;
+          - one DEL removes exactly one character, and only while the field has
+            focus (WeChat drops that focus on its own — deleting without re-checking
+            it is what left a 5-char residue glued onto the next reply).
+
+        So: delete in bounded rounds, re-asserting focus each round, and verify after
+        each round. The caller MUST refuse to send when this returns False: a dropped
+        reply is recoverable, a merged one is not.
         """
         try:
             if not self._draft_ready():
-                return
-            self._focus_input_sync()
-            self.adb.shell("am broadcast -a ADB_CLEAR_TEXT -n com.android.adbkeyboard/.AdbIME")
-            time.sleep(0.25)
-            for _ in range(8):  # drains characters; also drops a leftover quote card
-                self.adb.keyevent(67)
-                time.sleep(0.12)
-            if self._draft_ready():
-                log.warning("stale draft survived the clear; next reply may be prefixed")
-            else:
-                log.info("cleared stale draft left in the input box")
+                return True
+            for round_no in range(6):
+                if not self._input_focused():
+                    self._focus_input_sync()
+                for _ in range(80):
+                    self.adb.keyevent(67)   # also drains a leftover quote card
+                    time.sleep(0.01)
+                time.sleep(0.2)
+                if not self._draft_ready():
+                    log.info("cleared stale draft in %d round(s)", round_no + 1)
+                    return True
+            log.warning("stale draft survived the clear")
+            return False
         except AdbError:
-            pass
+            return False
+
+    def _wait_draft_complete(self, text: str, timeout_s: float = 10.0) -> bool:
+        """Wait until the IME has finished committing the reply into the box.
+
+        ADBKeyboard commits an ADB_INPUT_TEXT broadcast asynchronously (two chunks
+        0.3-0.8s apart). Sending the moment the box is merely non-empty made a long
+        reply go out cut mid-sentence while the tail kept arriving into the freshly
+        emptied box, where it then merged into the NEXT reply (observed 2026-11-25).
+
+        Two acceptance paths, one screenshot per poll:
+          - the tail of the reply is visible (the box scrolls to the caret), or
+          - the box content is IDENTICAL across two consecutive samples, i.e. the
+            IME has gone quiet. This second path is what actually holds up: exact
+            tail matching flapped on OCR jitter and caused a duplicate retry.
+        """
+        want = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text)[-12:]
+        prev: str | None = None
+        start = time.time()
+        while time.time() - start < timeout_s:
+            lines = oc.ocr_png(self.adb.screencap())
+            ready = any(l.cy > self._h * 0.85 and l.text.strip().lower() in ("send", "发送")
+                        for l in lines)
+            box = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "",
+                         "".join(l.text for l in lines if l.cy > self._h * 0.78))
+            if ready and want and want in box:
+                return True
+            if ready and prev is not None and box == prev:
+                return True
+            prev = box if ready else None
+            time.sleep(0.6)
+        return False
 
     def _deliver_in_home_sync(self, text: str, reply_to: str | None = None) -> bool:
         ok, _ = self._in_home_sync()
@@ -1046,8 +1118,11 @@ class Collector:
             if not self._goto_home_sync():
                 return False
         # an earlier aborted send can leave its text in the box: clear it BEFORE
-        # quoting, otherwise this reply goes out concatenated with that one
-        self._clear_input_sync()
+        # quoting, and refuse to send at all if it cannot be cleared, so a stale
+        # draft can never be glued onto this reply
+        if not self._clear_input_sync():
+            log.error("send aborted: input box still holds a stale draft")
+            return False
         # gap rule: quote the answered message when it's far behind the newest
         quoted = self._maybe_quote_sync(reply_to)
         self._quote_texts.clear()
@@ -1056,16 +1131,24 @@ class Collector:
         for attempt in range(2):
             self._ensure_text_mode_sync()
             self._focus_input_sync(quoted=quoted)
+            if attempt > 0:
+                # a failed first attempt leaves its text in the box; appending the
+                # same reply again would send it twice (observed 2026-11-25)
+                if not self._clear_input_sync():
+                    log.error("send aborted: could not clear the partial draft")
+                    return False
             chunks = [text[i:i + 200] for i in range(0, len(text), 200)]
             for i, chunk in enumerate(chunks):
                 self.adb.input_text(chunk, method=method)
                 if i < len(chunks) - 1:
                     time.sleep(random.uniform(0.3, 0.8))
             time.sleep(0.7)
-            if self._draft_ready():
+            # do NOT commit the moment the box is merely non-empty: the IME is still
+            # streaming chunks in, and an early send truncates the message
+            if self._wait_draft_complete(text):
                 delivered = True
                 break
-            log.warning("draft not visible after input (attempt %d)", attempt + 1)
+            log.warning("draft incomplete after input (attempt %d)", attempt + 1)
         if not delivered:
             log.error("send aborted: text never reached the input box")
             return False

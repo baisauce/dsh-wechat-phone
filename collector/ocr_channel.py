@@ -147,7 +147,8 @@ def find_conversation_row(lines: list[Line], title: str, w: int) -> Line | None:
 
 
 def extract_chat_messages(lines: list[Line], w: int, h: int,
-                          bot_names: list[str] | None = None) -> list[dict]:
+                          bot_names: list[str] | None = None,
+                          last_sender: str | None = None) -> list[dict]:
     """Chat-window bubbles oldest-first, label-tracking state machine.
 
     Geometry alone cannot separate long left bubbles from short right ones
@@ -156,6 +157,10 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
       - left bubbles always START near the bubble's left padding (~0.19w)
       - own bubbles are right-aligned: text left edge pushed right (>0.24w)
       - continuation lines of a multi-line bubble sit <80px below the previous
+
+    `last_sender` seeds the sticky name (see below) so a bubble whose label was
+    scrolled off the top of this screen still gets its real sender instead of the
+    generic "群友" fallback.
     """
     # Bottom limit: WeChat pins the newest bubble just above the input bar, so a flat
     # 0.86h cut silently drops the one message that matters most (measured on a 1080x2412
@@ -167,6 +172,13 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
     body = sorted((l for l in lines if 200 < l.cy < body_bottom), key=lambda l: l.cy)
     raw: list[dict] = []
     pending_sender: str | None = None
+    # Sticky member name. WeChat paints a name label only above the FIRST bubble of a
+    # consecutive run, and that label can also be scrolled off or dropped by OCR. Such
+    # bubbles used to fall through to the generic "群友" fallback, which made AstrBot
+    # record real members (and the persona's "father") as an anonymous group member.
+    # Remember the last member name actually read instead.
+    sticky: str | None = (last_sender
+                          if last_sender and last_sender not in (bot_names or []) else None)
     last_ts: float | None = None      # time separator directly above the next bubble
     now_ts = time.time()
 
@@ -186,10 +198,17 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         if (abs(l.cx / w - 0.5) < 0.10 and l.left > w * 0.30
                 and l.right < w * 0.72 and len(s) <= 30):
             continue  # centered system note ("xx joined" etc.)
-        nxt = next((x for x in body[i:] if 0 < x.cy - l.cy < 95), None)
-        is_label = (l.bottom - l.top) < 46 and l.cx < w * 0.30 and len(s) <= 20
+        nxt = next((x for x in body[i:] if 0 < x.cy - l.cy < 130), None)
+        # Name labels are a smaller font than message text: 44-47px tall on a
+        # 1200x2664 MagicOS phone where message lines are 48-64px. The old <46 cut
+        # dropped 46px labels (two/three-character nicknames) and the old 95px gap
+        # dropped a label 96px above its bubble, both of which silently demoted the
+        # speaker to "群友".
+        is_label = (l.bottom - l.top) <= 47 and l.cx < w * 0.30 and len(s) <= 20
         if is_label:
             pending_sender = s if nxt is not None else None  # dangling label at bottom: drop
+            if pending_sender is not None:
+                sticky = pending_sender
             continue
         # quote line inside a bubble ("name: quoted text", small font, indented,
         # sits right below the member's own text) -> append to that message
@@ -201,8 +220,11 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
             continue
         m = _SENDER_PREFIX_RE.match(s)
         if m and l.left < w * 0.30 and len(m.group(1)) <= 24:
-            raw.append({"text": m.group(2).strip(), "sender": m.group(1).strip(),
+            sender = m.group(1).strip()
+            raw.append({"text": m.group(2).strip(), "sender": sender,
                         "is_self": False, "y": l.cy, "age_s": age_of()})
+            if sender not in (bot_names or []):
+                sticky = sender
             pending_sender = None
             continue
         if pending_sender is not None:
@@ -210,10 +232,10 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
             sender = pending_sender
         elif raw and 0 < l.cy - raw[-1]["y"] < 80:
             is_self = raw[-1]["is_self"]         # continuation line of same bubble
-            sender = raw[-1]["sender"] or ""     # inherit side AND sender for merging
+            sender = raw[-1]["sender"] or (sticky or "")   # inherit side AND sender
         else:
             is_self = l.left > w * 0.24          # fresh bubble: left-margin decides side
-            sender = ""
+            sender = "" if is_self else (sticky or "")
         raw.append({"text": s, "sender": None if is_self else sender,
                     "is_self": is_self, "y": l.cy, "age_s": age_of()})
         pending_sender = None
