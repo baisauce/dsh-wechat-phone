@@ -437,7 +437,8 @@ class Collector:
             log.info("home %r baseline: %d visible, cursor=%r", self.home, len(msgs), self._cursor[:20])
             hits = [m for m in others if self._is_at(m["text"])
                     and self._age_ok(m, float(self.cfg.get("backlog_max_age_s", 3 * 86400)))
-                    and msg_key(self.home, m) not in getattr(self, "_history_answered", set())]
+                    and msg_key(self.home, m) not in getattr(self, "_history_answered", set())
+                    and msg_fp(self.home, m) not in getattr(self, "_fp_answered", set())]
             if hits:
                 log.info("history has %d unanswered @-mention(s), queueing one-by-one", len(hits))
                 self._backlog.extend(hits)
@@ -894,29 +895,61 @@ class Collector:
         time.sleep(0.5)
         return False
 
-    def _maybe_quote_sync(self, reply_to: str | None) -> None:
+    def _maybe_quote_sync(self, reply_to: str | None) -> bool:
         """Gap rule: the reply is a QUOTE as soon as the answered message is even ONE
         bubble behind (or needs scrolling up to find). Only a reply that lands directly
         under the newest message goes out plain - otherwise the group can't tell which
-        question this answer belongs to."""
+        question this answer belongs to.
+
+        Returns True when a quote card is actually sitting in the input box: it makes
+        the field grow upwards, which moves the tap target (see _focus_input_sync)."""
         if not reply_to:
-            return
+            return False
         need = int(self.cfg.get("quote_gap", QUOTE_GAP_DEFAULT))
         loc = self._locate_for_quote_sync(reply_to)
         if loc is None:
             log.info("quote target scrolled away unrecoverably, plain reply")
-            return
+            return False
         msgs, i, pages_up = loc
         gap = len(msgs) - 1 - i + pages_up * 6  # off-screen pages count as ~6 each
         if gap >= need:
             if self._quote_bubble_sync(reply_to):
-                return
+                return True
             log.info("quote action failed, falling back to plain reply")
         else:
             for _ in range(pages_up):  # close enough: go back to the bottom
                 self.adb.swipe(self._w // 2, int(self._h * 0.72),
                                self._w // 2, int(self._h * 0.32), 350)
                 time.sleep(0.6)
+        return False
+
+    def _focus_input_sync(self, quoted: bool = False) -> bool:
+        """Put the caret in WeChat's text field, wherever this phone keeps it.
+
+        The bar is bottom-anchored, but a quote card makes the field grow UPWARDS
+        (HONOR 1200x2664: plain field ~0.97h, quoted field ~0.916h). The old single
+        ``h - 80`` anchor therefore landed on the quote card and every ADBKeyboard
+        broadcast after it went nowhere, so the send aborted with "draft not
+        visible". Walk a few candidate rows and keep the first one that actually
+        services an editable view instead of trusting a per-phone pixel constant.
+        """
+        px, _ = oc.chat_input_point(self._w, self._h)
+        order = (0.90, 0.916, 0.93, 0.95, 0.97) if quoted else (0.95, 0.97, 0.93, 0.916, 0.90)
+        for frac in order:
+            try:
+                self.adb.tap(px, int(self._h * frac))
+            except AdbError:
+                continue
+            time.sleep(0.7)
+            try:
+                dump = self.adb.shell("dumpsys input_method")
+            except AdbError:
+                return True  # cannot verify; let the draft check decide
+            if ("mInputShown=true" in dump
+                    and "mServedView=com.tencent.mm.ui.widget.MMEditText" in dump):
+                return True
+        log.info("input box never took focus; sending broadcast anyway")
+        return False
 
     def _quote_last_sync(self) -> bool:
         """Long-press the newest @-message and tap 引用 so the reply carries a quote card."""
@@ -952,28 +985,77 @@ class Collector:
                    for l in lines)
 
     def _ensure_text_mode_sync(self) -> None:
-        """WeChat may sit in hold-to-talk mode; leftmost icon toggles back."""
-        lines = oc.ocr_png(self.adb.screencap())
-        if any(("hold to talk" in l.text.lower() or "按住" in l.text)
-               and l.cy > self._h * 0.90 for l in lines):
-            self.adb.tap(int(self._w * 0.06), self._h - 75)
+        """WeChat may sit in hold-to-talk mode; the leftmost icon toggles back.
+
+        Two traps learned on a HONOR/MagicOS 1200x2664 phone (2026-11-25):
+
+        * WeChat 8.0.80 also paints a "可按住转文字" hint inside the NORMAL text
+          bar. Matching any line containing "按住" flipped the bar INTO voice
+          mode before every send, so the draft never landed in the input box.
+          Only a bare hold-to-talk button counts as voice mode.
+        * The toggle must be hit at the button's OWN row. The old fixed
+          ``h - 75`` anchor assumed the bar sits 75px above the screen bottom;
+          on this phone the bar is ~100px higher, so the tap missed the toggle
+          (and in text mode it hit nothing useful).
+        """
+        def voice_row() -> int | None:
+            lines = oc.ocr_png(self.adb.screencap())
+            hits = [l for l in lines
+                    if l.cy > self._h * 0.90 and "转文字" not in l.text
+                    and ("hold to talk" in l.text.lower() or l.text.startswith("按住"))]
+            return int(hits[-1].cy) if hits else None
+
+        y = voice_row()
+        if y is None:
+            return
+        # first shot: the detected row; second: legacy anchor, in case the bar
+        # shifted between the screenshot and the tap.
+        for tap_y in (y, self._h - 75):
+            self.adb.tap(int(self._w * 0.06), tap_y)
             time.sleep(0.8)
+            if voice_row() is None:
+                return
+
+    def _clear_input_sync(self) -> None:
+        """Drop a stale draft or quote card left behind by a failed send.
+
+        WeChat keeps whatever is in the input box, and the next reply is APPENDED
+        to it, so one undelivered answer went out glued onto the next one
+        (observed 2026-11-25: two answers arrived as a single bubble). Clear
+        before typing instead of trusting the box to be empty.
+        """
+        try:
+            if not self._draft_ready():
+                return
+            self._focus_input_sync()
+            self.adb.shell("am broadcast -a ADB_CLEAR_TEXT -n com.android.adbkeyboard/.AdbIME")
+            time.sleep(0.25)
+            for _ in range(8):  # drains characters; also drops a leftover quote card
+                self.adb.keyevent(67)
+                time.sleep(0.12)
+            if self._draft_ready():
+                log.warning("stale draft survived the clear; next reply may be prefixed")
+            else:
+                log.info("cleared stale draft left in the input box")
+        except AdbError:
+            pass
 
     def _deliver_in_home_sync(self, text: str, reply_to: str | None = None) -> bool:
         ok, _ = self._in_home_sync()
         if not ok:
             if not self._goto_home_sync():
                 return False
+        # an earlier aborted send can leave its text in the box: clear it BEFORE
+        # quoting, otherwise this reply goes out concatenated with that one
+        self._clear_input_sync()
         # gap rule: quote the answered message when it's far behind the newest
-        self._maybe_quote_sync(reply_to)
+        quoted = self._maybe_quote_sync(reply_to)
         self._quote_texts.clear()
         method = self.cfg.get("input_method", "adbkeyboard")
         delivered = False
         for attempt in range(2):
             self._ensure_text_mode_sync()
-            px, py = oc.chat_input_point(self._w, self._h)
-            self.adb.tap(px, py)
-            time.sleep(0.5)
+            self._focus_input_sync(quoted=quoted)
             chunks = [text[i:i + 200] for i in range(0, len(text), 200)]
             for i, chunk in enumerate(chunks):
                 self.adb.input_text(chunk, method=method)
@@ -1005,24 +1087,31 @@ class Collector:
             return any(l.cy > self._h * 0.85 and l.text.strip().lower() in ("send", "发送")
                        for l in lines)
 
-        try:
-            self.adb.shell("am broadcast -a ADB_EDITOR_CODE --ei i 3")
-            time.sleep(0.8)
-            if not send_visible():
-                return True
-        except AdbError:
-            pass
+        # ADBKeyboard's editor action is the cheapest send, but the action id
+        # matters: 4 is IME_ACTION_SEND (3 is SEARCH, which WeChat ignores). Some
+        # ROMs swallow even that, so fall back to Enter and then to the button.
+        for action in (4, 3):
+            try:
+                self.adb.shell(f"am broadcast -a ADB_EDITOR_CODE --ei i {action}")
+                time.sleep(0.8)
+                if not send_visible():
+                    return True
+            except AdbError:
+                pass
         self.adb.keyevent(66)
         time.sleep(0.8)
         if not send_visible():
             return True
-        lines = oc.ocr_png(self.adb.screencap())
-        for l in lines:
-            if l.cy > self._h * 0.85 and l.text.strip().lower() in ("send", "发送"):
-                self.adb.tap(int(l.cx), int(l.cy))
-                time.sleep(0.8)
-                if not send_visible():
-                    return True
+        for attempt in range(3):  # OCR can catch the button mid-animation
+            hit = next((l for l in oc.ocr_png(self.adb.screencap())
+                        if l.cy > self._h * 0.85
+                        and l.text.strip().lower() in ("send", "发送")), None)
+            if hit is None:
+                return True
+            self.adb.tap(int(hit.cx) + attempt * int(self._w * 0.03), int(hit.cy))
+            time.sleep(0.9)
+            if not send_visible():
+                return True
         log.warning("send NOT confirmed (Send button still up): %s", text[:40])
         return False
 
@@ -1037,16 +1126,24 @@ class Collector:
                 continue
             m = self._backlog.pop(0)
             k = msg_key(self.home, m)
-            if k in self._history_answered:
+            fp = msg_fp(self.home, m)
+            # fp covers the sender-name drift that msg_key cannot: OCR labelled the
+            # same bubble with a generic name on one scan and the member's nickname
+            # on the next, so a restart re-queued an @-mention that had already been
+            # forwarded and the group got the same answer three times (2026-11-25).
+            if k in self._history_answered or fp in self._fp_answered:
                 continue
             if self._is_my_text(m["text"]):
                 continue
             if self._ws is None:
                 self._backlog.insert(0, m)
                 continue
-            if not await self._forward_hits([(m, k, msg_fp(self.home, m))]):
+            if not await self._forward_hits([(m, k, fp)]):
                 continue
             self._history_answered.add(k)
+            # claim the fingerprint at FORWARD time, not only after delivery: a
+            # failed send must not turn into duplicate forwards on the next restart
+            self._fp_answered.add(fp)
             self._save_state()
             # wait for this answer to be typed before feeding the next
             start = time.time()
