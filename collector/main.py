@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import difflib
 import hashlib
 import json
 import logging
@@ -124,6 +125,11 @@ class Collector:
         self._history_answered: set[str] = set()
         self._fp_answered: set[str] = set()   # OCR-stable fingerprints already answered
         self._fp_recent: dict[str, float] = {}  # fp -> last forward ts (15min window)
+        # Full normalized texts of recently forwarded bubbles. A history page re-read
+        # can crop a bubble mid-way (only its tail lines visible), which changes both
+        # msg_key and msg_fp and slipped past every hash-based dedup: the same message
+        # was answered twice (2026-11-27 18:26 and 18:41). Text overlap catches that.
+        self._recent_forwarded: list[tuple[float, str]] = []
         self._mid_fp: dict[str, str] = {}    # sent msg_id -> fp (for answer marking)
         self._fp_inflight: dict[str, tuple] = {}  # fp -> (ts, batch): cross-path dup claim
         self._batch_seq = 0
@@ -149,6 +155,12 @@ class Collector:
             self._mid_fp = {k: v for k, v in (st.get("mid_fp") or {}).items()}
             self._self_full = list(st.get("self_full") or [])
             self._self_fps = set(st.get("self_fps") or [])
+            # crop-proof dedup must survive restarts: a cropped re-read right after a
+            # restart re-answered an already-answered message (2026-11-27 18:47)
+            now = time.time()
+            self._recent_forwarded = [(float(ts), str(t))
+                                      for ts, t in (st.get("recent_forwarded") or [])
+                                      if now - float(ts) < 86400]
             self._started = bool(self._seen)
             if self._started:
                 log.info("state restored: cursor=%r, %d seen", self._cursor[:20], len(self._seen))
@@ -167,7 +179,8 @@ class Collector:
                        "self_full": self._self_full[-80:],
                        "self_fps": list(self._self_fps)[-150:],
                        "fp_recent": {k: v for k, v in sorted(
-                           self._fp_recent.items(), key=lambda kv: -kv[1])[:200]}},
+                           self._fp_recent.items(), key=lambda kv: -kv[1])[:200]},
+                       "recent_forwarded": self._recent_forwarded[-60:]},
                       open(self._state_file + ".tmp", "w", encoding="utf-8"), ensure_ascii=False)
             os.replace(self._state_file + ".tmp", self._state_file)
         except Exception as e:
@@ -234,6 +247,48 @@ class Collector:
         own = self._own_text(text).replace("＠", "@")
         return (any(f"@{n}" in own for n in self.nicknames)
                 or self._is_quoting_me(text))
+
+    def _is_real_at(self, text: str) -> bool:
+        """Only a literal @nickname in the member's OWN text.
+
+        The rescue sweep uses this instead of _is_at(): a quote-echo ("<me>: ...")
+        counts as a reply in the live path, but when history pages are re-read a
+        bubble can be cropped down to just its quote line, and treating that as a
+        fresh @ re-answers a message that was already handled.
+        """
+        own = self._own_text(text).replace("＠", "@")
+        return any(f"@{n}" in own for n in self.nicknames)
+
+    @staticmethod
+    def _norm_full(text: str) -> str:
+        """Normalize for overlap comparison WITHOUT the 40-char cut of norm_text()."""
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text or "")
+
+    def _recent_dup(self, text: str, window_s: float = 7200,
+                    min_overlap: int = 18) -> str | None:
+        """Matched earlier text when `text` looks like a re-crop of what we sent.
+
+        Hash-based dedup (msg_key/msg_fp) cannot see this: cropping changes the head
+        of the text, so both hashes change. A long shared substring can. Only rescue
+        paths ask (gate=True); the live path keeps its position-based semantics, where
+        the same text AFTER the cursor is an intentional human re-send.
+        """
+        cur = self._norm_full(text)
+        if len(cur) < min_overlap:
+            return None
+        now = time.time()
+        self._recent_forwarded = [(ts, t) for ts, t in self._recent_forwarded
+                                  if now - ts < window_s]
+        for _ts, prev in reversed(self._recent_forwarded):
+            if not prev:
+                continue
+            if cur in prev or prev in cur:
+                return prev
+            m = difflib.SequenceMatcher(None, cur, prev, autojunk=False).find_longest_match(
+                0, len(cur), 0, len(prev))
+            if m.size >= min_overlap:
+                return prev
+        return None
 
     # ---- screen helpers ------------------------------------------------------
     def _in_home_sync(self) -> tuple[bool, list]:
@@ -454,10 +509,11 @@ class Collector:
             for m in msgs:
                 self._seen[msg_key(self.home, m)] = time.time()
             log.info("home %r baseline: %d visible, cursor=%r", self.home, len(msgs), self._cursor[:20])
-            hits = [m for m in others if self._is_at(m["text"])
+            hits = [m for m in others if self._is_real_at(m["text"])
                     and self._age_ok(m, float(self.cfg.get("backlog_max_age_s", 3 * 86400)))
                     and msg_key(self.home, m) not in getattr(self, "_history_answered", set())
-                    and msg_fp(self.home, m) not in getattr(self, "_fp_answered", set())]
+                    and msg_fp(self.home, m) not in getattr(self, "_fp_answered", set())
+                    and self._recent_dup(m["text"]) is None]
             if hits:
                 log.info("history has %d unanswered @-mention(s), queueing one-by-one", len(hits))
                 self._backlog.extend(hits)
@@ -573,6 +629,12 @@ class Collector:
             if gate and prev and prev[1] != batch and time.time() - prev[0] < 120:
                 log.info("skip duplicate forward (other path claimed): %s", m["text"][:30])
                 continue
+            if gate:
+                dup = self._recent_dup(m["text"])
+                if dup is not None:
+                    log.info("skip re-crop of an already forwarded bubble: %s",
+                             m["text"][:30])
+                    continue
             self._fp_inflight[fp] = (time.time(), batch)
             self._fp_recent[fp] = time.time()
             self._mid_fp[k] = fp
@@ -584,6 +646,9 @@ class Collector:
             try:
                 await self._ws.send(json.dumps(payload, ensure_ascii=False))
                 forwarded = True
+                self._recent_forwarded.append((time.time(), self._norm_full(m["text"])))
+                if len(self._recent_forwarded) > 300:
+                    self._recent_forwarded = self._recent_forwarded[-200:]
                 if payload["at"]:
                     self._quote_texts.append(m["text"])
                 log.info("inbound -> bridge: [%s] %s (at=%s)", payload["sender"], m["text"][:50], payload["at"])
@@ -671,8 +736,12 @@ class Collector:
             for j, m in enumerate(hist):
                 if m["is_self"] or self._is_my_text(m["text"]):
                     continue
-                if not self._is_at(m["text"]):
-                    continue          # sweep only rescues mentions, not keyword chatter
+                if not self._is_real_at(m["text"]):
+                    # rescue real @-mentions only. A quote-echo ("<me>: ...") counts
+                    # as a reply on the live path, but here a history page can be
+                    # cropped so only that echo line is visible - treating it as a
+                    # fresh @ re-answered an already-answered message (2026-11-27).
+                    continue
                 if not self._age_ok(m, float(self.cfg.get("live_max_age_s", 7200))):
                     continue          # hours old: the sweep rescues recent misses only
                 prev = hist[j - 1] if j else None
