@@ -682,21 +682,22 @@ class Collector:
                 continue
             # Position is the primary dedup: everything AFTER the cursor is new,
             # even if identical text was seen before (same person re-sending).
+            # Text overlap is checked on EVERY live read, not only when the cursor is
+            # gone: after a catch-up the cursor can be FOUND again while the "fresh"
+            # window still holds messages that were already forwarded (lagging cursor
+            # plus re-read crops). Hashes cannot see those variants - one question was
+            # answered three times this way at 11:41 (2026-11-28).
+            if self._recent_dup(m["text"], m.get("sender")) is not None:
+                self._seen[k] = time.time()
+                log.info("skip live re-read of an already forwarded bubble: %s",
+                         m["text"][:30])
+                continue
             if idx < 0:
                 if k in self._seen:
                     continue
                 # OCR-jitter guard on re-scan: same REAL message (stable head+tail
                 # fingerprint) answered or forwarded within 15min -> artifact
                 if fp in self._fp_answered or now - self._fp_recent.get(fp, 0) < 900:
-                    continue
-                # With the cursor gone, position can no longer tell a re-read from new
-                # traffic. A bubble re-read with a different crop hashes differently
-                # but still shares a whole OCR line with what we just forwarded
-                # (2026-11-28: one message answered three times this way).
-                if self._recent_dup(m["text"], m.get("sender")) is not None:
-                    self._seen[k] = time.time()
-                    log.info("skip live re-read of an already forwarded bubble: %s",
-                             m["text"][:30])
                     continue
             self._seen[k] = time.time()
             if not self._should_forward(m["text"]):
