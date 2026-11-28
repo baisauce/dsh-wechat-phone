@@ -25,6 +25,7 @@ import random
 import re
 import sys
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -69,6 +70,40 @@ def msg_fp(chat: str, m: dict) -> str:
     tail = t[-8:] if len(t) > 22 else ""
     raw = f"{chat}|{t[:14]}|{tail}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
+
+_SHINGLE_K = 6      # characters per shingle
+_SKETCH_N = 64      # min-hash sketch size per bubble
+
+
+def text_sketch(text: str, k: int = _SHINGLE_K, n: int = _SKETCH_N) -> tuple:
+    """Order-insensitive min-hash sketch of a bubble's character k-grams.
+
+    A crop only DROPS whole OCR lines - it never rewrites the remaining text - so
+    two reads of the same bubble keep most of their 6-grams. The old head+tail
+    fingerprint is blind to exactly this, because the head is what a crop removes;
+    that is why one message was re-answered over and over (2026-11-28).
+
+    CRC32 is used instead of hash() on purpose: Python's str hash is randomised per
+    process, and these sketches are persisted in state.json across restarts.
+    """
+    t = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text or "")
+    if len(t) < k:
+        return ()
+    grams = {zlib.crc32(t[i:i + k].encode("utf-8")) for i in range(len(t) - k + 1)}
+    return tuple(sorted(grams)[:n])
+
+
+def sketch_overlap(a: tuple, b: tuple) -> float:
+    """Containment-style similarity of two sketches: |A∩B| / min(|A|,|B|).
+
+    Containment rather than Jaccard: a cropped re-read is a SUBSET of the original,
+    and Jaccard would score that low precisely because the original is longer.
+    """
+    if not a or not b:
+        return 0.0
+    sa, sb = set(a), set(b)
+    return len(sa & sb) / min(len(sa), len(sb))
 
 
 def norm_title(t: str) -> str:
@@ -161,18 +196,25 @@ class Collector:
             self._recent_forwarded = []
             for ent in (st.get("recent_forwarded") or []):
                 try:
-                    if len(ent) == 4:
+                    if len(ent) == 5:
+                        ts, snd, txt, lines, sk = ent
+                        self._recent_forwarded.append(
+                            (float(ts), str(snd), str(txt), tuple(lines or ()),
+                             tuple(sk or ()) or text_sketch(str(txt))))
+                    elif len(ent) == 4:
                         ts, snd, txt, lines = ent
                         self._recent_forwarded.append(
-                            (float(ts), str(snd), str(txt), tuple(lines or ())))
+                            (float(ts), str(snd), str(txt), tuple(lines or ()),
+                             text_sketch(str(txt))))
                     elif len(ent) == 2:      # v1.1.1 shape: only (ts, text)
                         ts, txt = ent
                         self._recent_forwarded.append(
-                            (float(ts), "", str(txt), self._lines_of(str(txt))))
+                            (float(ts), "", str(txt), self._lines_of(str(txt)),
+                             text_sketch(str(txt))))
                 except Exception:
                     continue
-            self._recent_forwarded = [(ts, s, t, ln) for ts, s, t, ln in self._recent_forwarded
-                                      if now - ts < 86400]
+            self._recent_forwarded = [e for e in self._recent_forwarded
+                                      if now - e[0] < 86400]
             self._started = bool(self._seen)
             if self._started:
                 log.info("state restored: cursor=%r, %d seen", self._cursor[:20], len(self._seen))
@@ -322,16 +364,23 @@ class Collector:
         """
         cur = self._norm_full(text)
         cur_lines = set(self._lines_of(text))
+        cur_sketch = text_sketch(text)
         if len(cur) < 8 and not cur_lines:
             return None
         now = time.time()
         keep: list[tuple] = []
         hit: str | None = None
-        for ts, s_prev, prev, prev_lines in self._recent_forwarded:
+        for ts, s_prev, prev, prev_lines, prev_sk in self._recent_forwarded:
             if now - ts >= window_s:
                 continue
-            keep.append((ts, s_prev, prev, prev_lines))
+            keep.append((ts, s_prev, prev, prev_lines, prev_sk))
             if hit is not None or not prev:
+                continue
+            # Character n-gram sketch: the fingerprint that survives a crop, because
+            # cropping drops lines instead of rewriting the rest. Sender is ignored
+            # (OCR reassigns it between reads of one bubble).
+            if sketch_overlap(cur_sketch, prev_sk) >= 0.75:
+                hit = prev
                 continue
             # Sender is NOT part of the strong signals: OCR reassigns it between
             # reads of the same bubble (observed two different member names for a
@@ -766,7 +815,7 @@ class Collector:
                 forwarded = True
                 self._recent_forwarded.append(
                     (time.time(), str(m.get("sender") or ""), self._norm_full(m["text"]),
-                     self._lines_of(m["text"])))
+                     self._lines_of(m["text"]), text_sketch(m["text"])))
                 if len(self._recent_forwarded) > 300:
                     self._recent_forwarded = self._recent_forwarded[-200:]
                 if payload["at"]:
