@@ -333,9 +333,11 @@ class Collector:
             keep.append((ts, s_prev, prev, prev_lines))
             if hit is not None or not prev:
                 continue
-            if not self._same_sender(sender, s_prev):
-                continue
-            if len(cur) >= 8 and (cur in prev or prev in cur):
+            # Sender is NOT part of the strong signals: OCR reassigns it between
+            # reads of the same bubble (observed two different member names for a
+            # single message, 2026-11-28), so gating on it re-admitted duplicates.
+            # Only the weak line-level signal keeps the sender check.
+            if len(cur) >= 10 and (cur in prev or prev in cur):
                 hit = prev
                 continue
             if len(cur) >= min_overlap:
@@ -344,7 +346,7 @@ class Collector:
                 if m.size >= min_overlap:
                     hit = prev
                     continue
-            if cur_lines:
+            if cur_lines and self._same_sender(sender, s_prev):
                 # A crop drops lines but never rewrites them: any whole OCR line of
                 # the candidate still appears as a substring of the earlier text.
                 # crop A keeps the first line (caught by containment above), crop B
