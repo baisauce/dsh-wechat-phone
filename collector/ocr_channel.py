@@ -148,7 +148,8 @@ def find_conversation_row(lines: list[Line], title: str, w: int) -> Line | None:
 
 def extract_chat_messages(lines: list[Line], w: int, h: int,
                           bot_names: list[str] | None = None,
-                          last_sender: str | None = None) -> list[dict]:
+                          last_sender: str | None = None,
+                          is_mine=None) -> list[dict]:
     """Chat-window bubbles oldest-first, label-tracking state machine.
 
     Geometry alone cannot separate long left bubbles from short right ones
@@ -198,13 +199,22 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         if (abs(l.cx / w - 0.5) < 0.10 and l.left > w * 0.30
                 and l.right < w * 0.72 and len(s) <= 30):
             continue  # centered system note ("xx joined" etc.)
+        # Inline segments: WeChat renders an @mention as its own OCR box which can sit
+        # on the SAME visual row as the rest of the line ("@nick" + "text"). Without
+        # this the bubble split into two messages and the bare "@nick" line even
+        # looked like a name label (2026-11-28: the cursor anchored on such fragment).
+        if (raw and abs(l.cy - raw[-1]["y"]) < 15
+                and abs(l.left - raw[-1].get("left", l.left)) < w * 0.10):
+            raw[-1]["text"] += " " + s
+            continue
         nxt = next((x for x in body[i:] if 0 < x.cy - l.cy < 130), None)
         # Name labels are a smaller font than message text: 44-47px tall on a
         # 1200x2664 MagicOS phone where message lines are 48-64px. The old <46 cut
         # dropped 46px labels (two/three-character nicknames) and the old 95px gap
         # dropped a label 96px above its bubble, both of which silently demoted the
         # speaker to "群友".
-        is_label = (l.bottom - l.top) <= 47 and l.cx < w * 0.30 and len(s) <= 20
+        is_label = ((l.bottom - l.top) <= 47 and l.cx < w * 0.30 and len(s) <= 20
+                    and not s.startswith(("@", "＠")))
         if is_label:
             pending_sender = s if nxt is not None else None  # dangling label at bottom: drop
             if pending_sender is not None:
@@ -222,12 +232,21 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         if m and l.left < w * 0.30 and len(m.group(1)) <= 24:
             sender = m.group(1).strip()
             raw.append({"text": m.group(2).strip(), "sender": sender,
-                        "is_self": False, "y": l.cy, "age_s": age_of()})
+                        "is_self": False, "y": l.cy, "left": l.left, "age_s": age_of()})
             if sender not in (bot_names or []):
                 sticky = sender
             pending_sender = None
             continue
-        if pending_sender is not None:
+        mine = bool(is_mine and is_mine(s))
+        if mine:
+            # Geometry cannot separate long OWN bubbles from member bubbles on this
+            # phone (both L~0.186w R~0.812w, measured 2026-11-28), so the old
+            # left-margin rule filed bot replies as member messages. Consecutive
+            # same-side + sticky-sender merging then glued a bot reply INTO the
+            # member message above it. Own text is known, so use it instead.
+            is_self = True
+            sender = ""
+        elif pending_sender is not None:
             is_self = False                      # bubble directly under a name label
             sender = pending_sender
         elif raw and 0 < l.cy - raw[-1]["y"] < 80:
@@ -237,7 +256,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
             is_self = l.left > w * 0.24          # fresh bubble: left-margin decides side
             sender = "" if is_self else (sticky or "")
         raw.append({"text": s, "sender": None if is_self else sender,
-                    "is_self": is_self, "y": l.cy, "age_s": age_of()})
+                    "is_self": is_self, "y": l.cy, "left": l.left, "age_s": age_of()})
         pending_sender = None
     # merge multi-line bubbles into single messages
     merged: list[dict] = []
@@ -269,7 +288,23 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
                 continue
             fixed.append(m)
         merged = fixed
-    return merged
+    # Input-bar quote card: WeChat renders the quoted original ABOVE the text field,
+    # which on this phone reaches into the read window (measured y~2357 while
+    # body_bottom was 2474). OCR then sees it as "<member>: <text>" and, because the
+    # same text is already on screen, the window held the message TWICE - and a
+    # re-forwarded duplicate re-answers an answered message. Drop a bottom-band entry
+    # whose text (minus the "name:" prefix) is already present earlier on the screen.
+    kept: list[dict] = []
+    seen_texts: set[str] = set()
+    for m in merged:
+        body = re.sub(r"^[^:：]{1,24}[:：]\s*", "", m["text"] or "")
+        key = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", body)[:40]
+        if m["y"] > h * 0.80 and key and key in seen_texts:
+            continue
+        if key:
+            seen_texts.add(key)
+        kept.append(m)
+    return kept
 
 
 def chat_input_point(w: int, h: int) -> tuple[int, int]:

@@ -412,7 +412,15 @@ class Collector:
         """
         msgs = oc.extract_chat_messages(lines, self._w, self._h,
                                         bot_names=self.nicknames,
-                                        last_sender=self._last_member_sender)
+                                        last_sender=self._last_member_sender,
+                                        is_mine=self._is_my_text)
+        for m in msgs:
+            # Belt and braces: the parser only sees single OCR lines, so a long own
+            # bubble whose first line was cropped may still come back as a member
+            # message. Re-check the assembled text.
+            if not m["is_self"] and self._is_my_text(m["text"]):
+                m["is_self"] = True
+                m["sender"] = None
         for m in msgs:
             sender = m.get("sender")
             if not m["is_self"] and sender and sender not in self.nicknames:
