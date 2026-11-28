@@ -62,6 +62,28 @@ _TIME_RE = re.compile(
 )
 _SENDER_PREFIX_RE = re.compile(r"^([^:：]{1,24})[:：](.+)$")
 
+# WeChat paints a member's CURRENT STATUS next to their nickname in group bubbles
+# (a small status pill after the nickname). OCR returns it either as a box on the
+# same row ("<name>（" + status) or merged into the label ("<name><status>"), so
+# a member's own messages were filed under a nickname suffixed with that status
+# The bracket form is unambiguous; the merged form is matched against the common
+# status words, and only when at least 2 characters of name remain.
+_STATUS_WORDS = (
+    "听歌", "听广播", "在忙", "忙", "睡觉中", "睡觉", "吃饭", "学习中", "学习",
+    "游戏", "游戏中", "看剧", "追剧", "看电影", "发呆", "喝咖啡", "健身", "运动",
+    "加班", "出差", "旅行", "阅读", "开车", "摸鱼", "休闲", "宅", "刷剧",
+)
+
+
+def clean_sender_name(name: str) -> str:
+    """Strip a WeChat status pill off a name label: "<name>（<status>" / "<name><status>"."""
+    s = (name or "").strip().strip("：:·.。 ")
+    s = re.sub(r"[（(].*$", "", s).strip()
+    for w in _STATUS_WORDS:
+        if len(s) - len(w) >= 2 and s.endswith(w):
+            return s[: -len(w)].strip()
+    return s
+
 # WeChat stamps a chat with relative day labels ("Tue 18:32", "Yesterday 23:51",
 # "昨天 09:12", "11月3日"). They are the ONLY age signal the OCR channel has, and
 # without them a window parked hours in the past looks exactly like a live one:
@@ -173,6 +195,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
     body = sorted((l for l in lines if 200 < l.cy < body_bottom), key=lambda l: l.cy)
     raw: list[dict] = []
     pending_sender: str | None = None
+    last_label_y: float | None = None   # row of the previous name label (status pill)
     # Sticky member name. WeChat paints a name label only above the FIRST bubble of a
     # consecutive run, and that label can also be scrolled off or dropped by OCR. Such
     # bubbles used to fall through to the generic "群友" fallback, which made AstrBot
@@ -204,8 +227,16 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         # this the bubble split into two messages and the bare "@nick" line even
         # looked like a name label (2026-11-28: the cursor anchored on such fragment).
         if (raw and abs(l.cy - raw[-1]["y"]) < 15
-                and abs(l.left - raw[-1].get("left", l.left)) < w * 0.10):
+                and (abs(l.left - raw[-1].get("left", l.left)) < w * 0.10
+                     # inline continuation starts AT/after where the previous
+                     # segment ended: the @mention box can begin far right of the
+                     # bubble padding ("@nick" at 0.19w, text at 0.33w), so a
+                     # left-edge comparison alone split the bubble - and the tail
+                     # then looked like a fresh right-side bubble and was filed as
+                     # our own message (2026-11-28).
+                     or l.left >= raw[-1].get("right", 0) - w * 0.02)):
             raw[-1]["text"] += " " + s
+            raw[-1]["right"] = max(raw[-1].get("right", l.right), l.right)
             continue
         nxt = next((x for x in body[i:] if 0 < x.cy - l.cy < 130), None)
         # Name labels are a smaller font than message text: 44-47px tall on a
@@ -216,7 +247,18 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         is_label = ((l.bottom - l.top) <= 47 and l.cx < w * 0.30 and len(s) <= 20
                     and not s.startswith(("@", "＠")))
         if is_label:
-            pending_sender = s if nxt is not None else None  # dangling label at bottom: drop
+            label = clean_sender_name(s)
+            if (pending_sender is not None and last_label_y is not None
+                    and abs(l.cy - last_label_y) < 15):
+                # Second box of the SAME name row: WeChat renders the member's
+                # status pill next to the nickname, so OCR yields "<name>（" plus
+                # the status word. Overwriting instead of joining turned that
+                # member's messages into a member named after the status word,
+                # so the real speaker was lost (2026-11-28).
+                pending_sender = clean_sender_name(pending_sender + label) or None
+            else:
+                pending_sender = label if nxt is not None else None
+            last_label_y = l.cy
             if pending_sender is not None:
                 sticky = pending_sender
             continue
@@ -232,7 +274,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
         if m and l.left < w * 0.30 and len(m.group(1)) <= 24:
             sender = m.group(1).strip()
             raw.append({"text": m.group(2).strip(), "sender": sender,
-                        "is_self": False, "y": l.cy, "left": l.left, "age_s": age_of()})
+                        "is_self": False, "y": l.cy, "left": l.left, "right": l.right, "age_s": age_of()})
             if sender not in (bot_names or []):
                 sticky = sender
             pending_sender = None
@@ -256,7 +298,7 @@ def extract_chat_messages(lines: list[Line], w: int, h: int,
             is_self = l.left > w * 0.24          # fresh bubble: left-margin decides side
             sender = "" if is_self else (sticky or "")
         raw.append({"text": s, "sender": None if is_self else sender,
-                    "is_self": is_self, "y": l.cy, "left": l.left, "age_s": age_of()})
+                    "is_self": is_self, "y": l.cy, "left": l.left, "right": l.right, "age_s": age_of()})
         pending_sender = None
     # merge multi-line bubbles into single messages
     merged: list[dict] = []

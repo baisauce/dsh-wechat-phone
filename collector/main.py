@@ -252,6 +252,27 @@ class Collector:
                 self._self_full = self._self_full[-100:]
             self._self_fps.add(msg_fp(self.home, {"text": text}))
 
+    def _note_self_from_screen(self, m: dict) -> None:
+        """Refresh self memory for a bubble the parser considers ours.
+
+        Geometry cannot be trusted for long bubbles on this phone (own and member
+        bubbles have identical margins), so only accept it when the TEXT confirms
+        ownership. Otherwise a member message gets recorded as ours and is then
+        permanently filtered out by _is_my_text - a member reply was silently
+        swallowed this way (2026-11-28).
+        """
+        if m.get("is_self") and self._is_my_text(m["text"]):
+            self._note_self(m["text"])
+
+    def _self_sketch(self, full: str) -> tuple:
+        """Cached n-gram sketch of one of our own texts (see text_sketch)."""
+        cache = self.__dict__.setdefault("_self_sk_cache", {})
+        if full not in cache:
+            if len(cache) > 240:
+                cache.clear()
+            cache[full] = text_sketch(full)
+        return cache[full]
+
     def _is_my_text(self, text: str) -> bool:
         t = norm_text(text)
         if not t:
@@ -263,6 +284,15 @@ class Collector:
         if len(t) >= 5:
             for full in reversed(self._self_full[-60:]):
                 if t in full:
+                    return True
+        # OCR-jitter tolerant fallback: a single misread character (诶 -> 矣) breaks
+        # the substring test above, and the bubble was then filed as a member's
+        # message - a member got blamed for our reply (2026-11-28). Sketches survive
+        # that kind of noise.
+        sk = text_sketch(text)
+        if sk:
+            for full in reversed(self._self_full[-30:]):
+                if sketch_overlap(sk, self._self_sketch(full)) >= 0.8:
                     return True
         return False
 
@@ -621,8 +651,7 @@ class Collector:
         """Cursor-diff; forward wake-rule hits. Returns True if anything forwarded."""
         msgs = self._parse_messages_sync(lines)
         for m in msgs:
-            if m["is_self"]:
-                self._note_self(m["text"])
+            self._note_self_from_screen(m)
         others = [m for m in msgs if not m["is_self"] and not self._is_my_text(m["text"])]
         self._prune_seen()
         if not self._started:
@@ -632,8 +661,7 @@ class Collector:
             if pages > 0:
                 hist = await asyncio.to_thread(self._collect_upward_sync, pages)
                 for m in hist:
-                    if m["is_self"]:
-                        self._note_self(m["text"])
+                    self._note_self_from_screen(m)
                 hist_others = [m for m in hist if not m["is_self"]
                                and not self._is_my_text(m["text"])]
                 log.info("history scan: %d msgs across pages, %d from others", len(hist), len(hist_others))
@@ -664,8 +692,7 @@ class Collector:
             log.info("cursor lost: settling to the newest before reading")
             msgs2 = await asyncio.to_thread(self._settle_screen_sync)
             for m in msgs2:
-                if m["is_self"]:
-                    self._note_self(m["text"])
+                self._note_self_from_screen(m)
             msgs, others = msgs2, [m for m in msgs2
                                    if not m["is_self"] and not self._is_my_text(m["text"])]
             idx = self._locate_cursor(others)
@@ -677,8 +704,7 @@ class Collector:
             log.info("cursor lost, catching up %d page(s) upward", catch)
             hist = await asyncio.to_thread(self._collect_upward_sync, catch)
             for m in hist:
-                if m["is_self"]:
-                    self._note_self(m["text"])
+                self._note_self_from_screen(m)
             hist_others = [m for m in hist if not m["is_self"]
                            and not self._is_my_text(m["text"])]
             if hist_others:
@@ -841,8 +867,7 @@ class Collector:
             pages = int(self.cfg.get("history_pages", 3))
             hist = await asyncio.to_thread(self._collect_upward_sync, pages)
             for m in hist:
-                if m["is_self"]:
-                    self._note_self(m["text"])
+                self._note_self_from_screen(m)
             recovered = 0
             now = time.time()
             idx = -1
@@ -899,8 +924,7 @@ class Collector:
                 return
             now = time.time()
             for m in hist:
-                if m["is_self"]:
-                    self._note_self(m["text"])
+                self._note_self_from_screen(m)
             hits = []
             for j, m in enumerate(hist):
                 if m["is_self"] or self._is_my_text(m["text"]):
