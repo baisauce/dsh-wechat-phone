@@ -129,7 +129,7 @@ class Collector:
         # can crop a bubble mid-way (only its tail lines visible), which changes both
         # msg_key and msg_fp and slipped past every hash-based dedup: the same message
         # was answered twice (2026-11-27 18:26 and 18:41). Text overlap catches that.
-        self._recent_forwarded: list[tuple[float, str]] = []
+        self._recent_forwarded: list[tuple[float, str, str, tuple]] = []
         self._mid_fp: dict[str, str] = {}    # sent msg_id -> fp (for answer marking)
         self._fp_inflight: dict[str, tuple] = {}  # fp -> (ts, batch): cross-path dup claim
         self._batch_seq = 0
@@ -158,9 +158,21 @@ class Collector:
             # crop-proof dedup must survive restarts: a cropped re-read right after a
             # restart re-answered an already-answered message (2026-11-27 18:47)
             now = time.time()
-            self._recent_forwarded = [(float(ts), str(t))
-                                      for ts, t in (st.get("recent_forwarded") or [])
-                                      if now - float(ts) < 86400]
+            self._recent_forwarded = []
+            for ent in (st.get("recent_forwarded") or []):
+                try:
+                    if len(ent) == 4:
+                        ts, snd, txt, lines = ent
+                        self._recent_forwarded.append(
+                            (float(ts), str(snd), str(txt), tuple(lines or ())))
+                    elif len(ent) == 2:      # v1.1.1 shape: only (ts, text)
+                        ts, txt = ent
+                        self._recent_forwarded.append(
+                            (float(ts), "", str(txt), self._lines_of(str(txt))))
+                except Exception:
+                    continue
+            self._recent_forwarded = [(ts, s, t, ln) for ts, s, t, ln in self._recent_forwarded
+                                      if now - ts < 86400]
             self._started = bool(self._seen)
             if self._started:
                 log.info("state restored: cursor=%r, %d seen", self._cursor[:20], len(self._seen))
@@ -264,31 +276,84 @@ class Collector:
         """Normalize for overlap comparison WITHOUT the 40-char cut of norm_text()."""
         return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", text or "")
 
-    def _recent_dup(self, text: str, window_s: float = 7200,
-                    min_overlap: int = 18) -> str | None:
+    @staticmethod
+    def _lines_of(text: str) -> tuple[str, ...]:
+        """Normalized OCR lines long enough to identify a bubble.
+
+        A crop only DROPS lines, it never rewrites them: two reads of the same
+        bubble that were cropped differently still share at least one whole line.
+        """
+        out = []
+        for ln in (text or "").split("\n"):
+            n = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", ln)
+            if len(n) >= 8:
+                out.append(n)
+        return tuple(out)
+
+    @staticmethod
+    def _same_sender(a: str | None, b: str | None) -> bool:
+        """Lenient sender match: OCR truncates and drifts, so a short nickname and the
+        same nickname with a suffix must compare equal (e.g. "X" vs "X听歌").
+
+        Empty on either side counts as "unknown, do not block on it" - the other
+        signals (hashes/overlap) still have to fire.
+        """
+        x, y = Collector._norm_full(a or ""), Collector._norm_full(b or "")
+        if not x or not y:
+            return True
+        return x == y or x in y or y in x
+
+    def _recent_dup(self, text: str, sender: str | None = None,
+                    window_s: float = 7200, min_overlap: int = 18) -> str | None:
         """Matched earlier text when `text` looks like a re-crop of what we sent.
 
         Hash-based dedup (msg_key/msg_fp) cannot see this: cropping changes the head
-        of the text, so both hashes change. A long shared substring can. Only rescue
-        paths ask (gate=True); the live path keeps its position-based semantics, where
-        the same text AFTER the cursor is an intentional human re-send.
+        of the text, so both hashes change. Three signals, cheapest first:
+          - one normalized text contains the other (classic prefix/suffix crop),
+          - an 18+ character common substring,
+          - a WHOLE shared OCR line plus the same sender name. This last one is what
+            catches two different crops of one bubble: crop A keeps the first line,
+            crop B keeps the second line plus a quote-echo line appended by OCR, and
+            their 12-char overlap alone stayed under the substring threshold
+            (2026-11-28 09:21 / 09:22, same message answered three times).
+
+        Rescue paths always ask (gate=True). The live path asks only when the cursor
+        is gone, i.e. when position-based semantics no longer apply.
         """
         cur = self._norm_full(text)
-        if len(cur) < min_overlap:
+        cur_lines = set(self._lines_of(text))
+        if len(cur) < 8 and not cur_lines:
             return None
         now = time.time()
-        self._recent_forwarded = [(ts, t) for ts, t in self._recent_forwarded
-                                  if now - ts < window_s]
-        for _ts, prev in reversed(self._recent_forwarded):
-            if not prev:
+        keep: list[tuple] = []
+        hit: str | None = None
+        for ts, s_prev, prev, prev_lines in self._recent_forwarded:
+            if now - ts >= window_s:
                 continue
-            if cur in prev or prev in cur:
-                return prev
-            m = difflib.SequenceMatcher(None, cur, prev, autojunk=False).find_longest_match(
-                0, len(cur), 0, len(prev))
-            if m.size >= min_overlap:
-                return prev
-        return None
+            keep.append((ts, s_prev, prev, prev_lines))
+            if hit is not None or not prev:
+                continue
+            if not self._same_sender(sender, s_prev):
+                continue
+            if len(cur) >= 8 and (cur in prev or prev in cur):
+                hit = prev
+                continue
+            if len(cur) >= min_overlap:
+                m = difflib.SequenceMatcher(None, cur, prev, autojunk=False).find_longest_match(
+                    0, len(cur), 0, len(prev))
+                if m.size >= min_overlap:
+                    hit = prev
+                    continue
+            if cur_lines:
+                # A crop drops lines but never rewrites them: any whole OCR line of
+                # the candidate still appears as a substring of the earlier text.
+                # crop A keeps the first line (caught by containment above), crop B
+                # keeps the second line plus a quote-echo line (caught here), and
+                # their 12-char overlap alone stayed under the substring threshold.
+                if any(len(ln) >= 10 and ln in prev for ln in cur_lines):
+                    hit = prev
+        self._recent_forwarded = keep
+        return hit
 
     # ---- screen helpers ------------------------------------------------------
     def _in_home_sync(self) -> tuple[bool, list]:
@@ -446,6 +511,16 @@ class Collector:
             return "|".join(sorted(l.text for l in ls if l.cy > self._h * 0.55)[:6])
 
         lines = oc.ocr_png(self.adb.screencap())
+        # With unread messages WeChat parks the viewport in history and swiping up
+        # walks through them slowly; the pill jumps straight to the newest.
+        import re as _re
+        pill = [l for l in lines
+                if _re.search(r"(new messages|条新消息|条消息)", l.text)
+                and l.cx > self._w * 0.55 and self._h * 0.35 < l.cy < self._h * 0.90]
+        if pill:
+            self.adb.tap(int(pill[0].cx), int(pill[0].cy))
+            time.sleep(1.0)
+            lines = oc.ocr_png(self.adb.screencap())
         for _ in range(max(1, max_pulls)):
             before = sig(lines)
             self.adb.swipe(self._w // 2, int(self._h * 0.80),
@@ -513,7 +588,7 @@ class Collector:
                     and self._age_ok(m, float(self.cfg.get("backlog_max_age_s", 3 * 86400)))
                     and msg_key(self.home, m) not in getattr(self, "_history_answered", set())
                     and msg_fp(self.home, m) not in getattr(self, "_fp_answered", set())
-                    and self._recent_dup(m["text"]) is None]
+                    and self._recent_dup(m["text"], m.get("sender")) is None]
             if hits:
                 log.info("history has %d unanswered @-mention(s), queueing one-by-one", len(hits))
                 self._backlog.extend(hits)
@@ -552,6 +627,29 @@ class Collector:
                 msgs = hist
                 # re-locate cursor inside the merged history
                 idx = self._locate_cursor(others)
+        if idx < 0:
+            # Still no anchor. After a restart or a long unread backlog the stored
+            # cursor can be far out of view, and the end-of-cycle update refuses to
+            # move backwards onto an already-answered message - so this loop would
+            # spin forever (2026-11-28: 3+ minutes of settling/catch-up, no traffic
+            # read at all). Re-anchor to the newest message on a settled bottom
+            # screen, mark the screen as seen, and skip traffic for one cycle.
+            bottom_lines = await asyncio.to_thread(self._settle_bottom_sync)
+            b_msgs = self._parse_messages_sync(bottom_lines)
+            b_others = [m for m in b_msgs if not m["is_self"]
+                        and not self._is_my_text(m["text"])]
+            if b_others:
+                # prefer a substantial message as the anchor: an "@nick" line that
+                # OCR split off on its own normalizes to 3 chars and would be found
+                # again only while that exact bubble is on screen
+                solid = [m for m in b_others if len(norm_text(m["text"])) >= 8]
+                anchor = (solid or b_others)[-1]
+                self._cursor = norm_text(anchor["text"])
+                for m in b_msgs:
+                    self._seen[msg_key(self.home, m)] = time.time()
+                log.info("cursor re-anchored to newest: %r", self._cursor[:20])
+                self._save_state()
+                return False
         fresh = others[idx + 1:] if idx >= 0 else others
         forwarded = False
         hits = []
@@ -580,6 +678,15 @@ class Collector:
                 # OCR-jitter guard on re-scan: same REAL message (stable head+tail
                 # fingerprint) answered or forwarded within 15min -> artifact
                 if fp in self._fp_answered or now - self._fp_recent.get(fp, 0) < 900:
+                    continue
+                # With the cursor gone, position can no longer tell a re-read from new
+                # traffic. A bubble re-read with a different crop hashes differently
+                # but still shares a whole OCR line with what we just forwarded
+                # (2026-11-28: one message answered three times this way).
+                if self._recent_dup(m["text"], m.get("sender")) is not None:
+                    self._seen[k] = time.time()
+                    log.info("skip live re-read of an already forwarded bubble: %s",
+                             m["text"][:30])
                     continue
             self._seen[k] = time.time()
             if not self._should_forward(m["text"]):
@@ -630,7 +737,7 @@ class Collector:
                 log.info("skip duplicate forward (other path claimed): %s", m["text"][:30])
                 continue
             if gate:
-                dup = self._recent_dup(m["text"])
+                dup = self._recent_dup(m["text"], m.get("sender"))
                 if dup is not None:
                     log.info("skip re-crop of an already forwarded bubble: %s",
                              m["text"][:30])
@@ -646,7 +753,9 @@ class Collector:
             try:
                 await self._ws.send(json.dumps(payload, ensure_ascii=False))
                 forwarded = True
-                self._recent_forwarded.append((time.time(), self._norm_full(m["text"])))
+                self._recent_forwarded.append(
+                    (time.time(), str(m.get("sender") or ""), self._norm_full(m["text"]),
+                     self._lines_of(m["text"])))
                 if len(self._recent_forwarded) > 300:
                     self._recent_forwarded = self._recent_forwarded[-200:]
                 if payload["at"]:
